@@ -136,7 +136,17 @@ async function main() {
   const patchDir = join(ROOT, "vendor", "pi-patches");
 
   if (!existsSync(join(args.piSrc, "packages"))) {
-    console.error(`Pi source not found at: ${args.piSrc}`);
+    // CI / clean checkout: the patched vendor tree is committed to the repo,
+    // and no local Pi source exists to re-vendor from. Use it as-is.
+    const complete = PI_PKG_NAMES.every((name) => existsSync(join(vendorDir, name, "dist")));
+    if (complete) {
+      console.log(`Pi source not found at ${args.piSrc}; using committed vendor tree (vendor/pi/packages).`);
+      return;
+    }
+    console.error(
+      `Pi source not found at: ${args.piSrc} (and no committed vendor tree is complete). ` +
+        `Pass --pi-src <path> or set PERCHO_PI_SRC.`,
+    );
     process.exit(1);
   }
   console.log(`Vendoring Pi packages from ${args.piSrc}`);
