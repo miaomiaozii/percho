@@ -24,3 +24,9 @@ npm-debug.log*
 .idea/
 .vscode/
 .agents/
+
+# 本地 pi 源路径（机器相关，vendor-local-pi.mjs 默认值已内置）
+vendor/pi-local.json
+
+# 例外：vendored Pi 的 dist 必须入库（构建/打包复现依赖）
+!vendor/pi/packages/*/dist/

@@ -1,17 +1,29 @@
-import { join, posix } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import nodePolicy from "../../packages/shared/src/runtime-node-policy.json" with { type: "json" };
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** Vendor link entries (local pi) carry no version/deps in the lock; read the real manifest. */
+function vendorManifest(entry) {
+	if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
+		return null;
+	return JSON.parse(readFileSync(join(repoRoot, entry.resolved, "package.json"), "utf8"));
+}
 
 /** Select exact installed lock entries, without introducing another dependency/version solver. */
 export function runtimeBuildLock(lock, version) {
-	const dependencies = { "@earendil-works/pi-coding-agent": "1.4.0", "@earendil-works/pi-ai": "1.4.0" };
-	const devDependencies = { esbuild: "0.25.12", "patch-package": "8.0.1" };
+	const dependencies = { "@earendil-works/pi-coding-agent": "1.5.0", "@earendil-works/pi-ai": "1.5.0" };
+	const devDependencies = { esbuild: "0.25.12" };
 	const packages = {};
 	const production = new Set();
 	const locate = (parent, name, optional = false) => {
 		let current = parent;
 		for (;;) {
 			const candidate = posix.join(current, "node_modules", name);
-			if (lock.packages[candidate] && !lock.packages[candidate].link) return candidate;
+			const entry = lock.packages[candidate];
+			if (entry && (!entry.link || vendorManifest(entry))) return candidate;
 			if (!current || current === ".") break;
 			current = posix.dirname(current);
 		}
@@ -28,13 +40,14 @@ export function runtimeBuildLock(lock, version) {
 			production.add(key);
 			delete packages[key].dev;
 		} else packages[key].dev = true;
+		const manifest = vendorManifest(source) ?? source;
 		for (const name of new Set([
-			...Object.keys(source.dependencies ?? {}),
-			...Object.keys(source.optionalDependencies ?? {}),
-			...Object.keys(source.peerDependencies ?? {}),
+			...Object.keys(manifest.dependencies ?? {}),
+			...Object.keys(manifest.optionalDependencies ?? {}),
+			...Object.keys(manifest.peerDependencies ?? {}),
 		])) {
 			const optional =
-				name in (source.optionalDependencies ?? {}) || source.peerDependenciesMeta?.[name]?.optional;
+				name in (manifest.optionalDependencies ?? {}) || manifest.peerDependenciesMeta?.[name]?.optional;
 			const child = locate(key, name, optional);
 			if (child) visit(child, runtime);
 		}
@@ -42,8 +55,9 @@ export function runtimeBuildLock(lock, version) {
 	for (const name of Object.keys(dependencies)) visit(locate("", name), true);
 	for (const name of Object.keys(devDependencies)) visit(locate("", name), false);
 	for (const [name, expected] of Object.entries({ ...dependencies, ...devDependencies })) {
-		if (packages[`node_modules/${name}`]?.version !== expected)
-			throw new Error(`Runtime lock mismatch for ${name}`);
+		const entry = packages[`node_modules/${name}`];
+		const actual = entry?.version ?? vendorManifest(entry)?.version;
+		if (actual !== expected) throw new Error(`Runtime lock mismatch for ${name}`);
 	}
 	const typebox =
 		lock.packages["packages/backend/node_modules/typebox"] ?? lock.packages["node_modules/typebox"];

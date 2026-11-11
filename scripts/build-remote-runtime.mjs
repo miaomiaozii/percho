@@ -56,20 +56,9 @@ try {
 	);
 	await writeFile(join(stage, "package.json"), JSON.stringify(selected.manifest, null, 2));
 	await writeFile(join(stage, "package-lock.json"), JSON.stringify(selected.lock, null, 2));
+	// Local pi: the selected lock references the vendored (patched) packages via link entries.
+	await cp(join(repo, "vendor"), join(stage, "vendor"), { recursive: true });
 	await run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
-	const patches = join(work, "patches");
-	await mkdir(patches);
-	for (const name of [
-		"@earendil-works+pi-agent-core+1.4.0.patch",
-		"@earendil-works+pi-coding-agent+1.4.0.patch",
-	]) {
-		await copyFile(join(repo, "patches", name), join(patches, name));
-	}
-	await run(process.execPath, [
-		join(stage, "node_modules/patch-package/index.js"),
-		"--patch-dir",
-		"../patches",
-	]);
 	const require = createRequire(join(stage, "package.json"));
 	const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);
 	await build({
