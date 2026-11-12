@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
@@ -8,6 +9,7 @@ import type {
 	LocalPiSyncProjects,
 	LocalPiSyncResult,
 } from "@percho/shared";
+import { sessionNameFromUserText } from "../session/naming";
 import { inside } from "./path-policy";
 
 /** 可以用这个环境变量指定要跟随的本地 Pi 安装目录（优先于默认候选）。 */
@@ -175,7 +177,7 @@ export async function syncLocalPiProject(
 	const from = join(sourceRoot, project);
 	if (!inside(sourceRoot, from) || !(await isPlainDirectory(from)))
 		throw new Error(`Unknown local Pi project: ${project}`);
-	const result = await copyProjectSessions(from, join(target, "sessions", project));
+	const result = await copyProjectSessions(from, join(target, "sessions", project), { nameImported: true });
 	const ledger = await readSyncLedger(target);
 	ledger.projects[project] = { auto: true, syncedAt: new Date().toISOString() };
 	await writeSyncLedger(target, ledger);
@@ -218,6 +220,9 @@ export async function autoSyncLocalPiProjects(
 	target: string,
 	options?: { source?: string },
 ): Promise<LocalPiAutoSyncSummary> {
+	// 早期版本导入的会话没补名字，启动时一次性补齐（只写 Percho 存储，不碰本地 Pi）。
+	const titled = await nameUntitledSessions(join(target, "sessions"));
+	if (titled > 0) console.log(`[local-pi-sync] 补会话标题 ${titled} 个`);
 	const ledger = await readSyncLedger(target);
 	const names = Object.entries(ledger.projects)
 		.filter(([name, entry]) => entry?.auto === true && isValidProjectName(name))
@@ -233,7 +238,9 @@ export async function autoSyncLocalPiProjects(
 		const from = join(sourceRoot, name);
 		if (!(await isPlainDirectory(from))) continue;
 		try {
-			const { added, skipped } = await copyProjectSessions(from, join(target, "sessions", name));
+			const { added, skipped } = await copyProjectSessions(from, join(target, "sessions", name), {
+				nameImported: true,
+			});
 			summary.added += added;
 			summary.skipped += skipped;
 			if (added > 0) {
@@ -289,6 +296,7 @@ async function writeSyncLedger(target: string, ledger: SyncLedger): Promise<void
 async function copyProjectSessions(
 	fromDir: string,
 	toDir: string,
+	options?: { nameImported?: boolean },
 ): Promise<{ added: number; skipped: number }> {
 	await mkdir(toDir, { recursive: true });
 	let added = 0;
@@ -302,8 +310,104 @@ async function copyProjectSessions(
 		}
 		const tmp = `${toFile}.local-pi-sync-tmp`;
 		await copyFile(join(fromDir, name), tmp);
+		if (options?.nameImported) await nameImportedSession(tmp);
 		await rename(tmp, toFile);
 		added += 1;
 	}
 	return { added, skipped };
+}
+/** 给存储里所有还没名字的会话补上标题，返回补了几个（递归扫项目目录）。 */
+async function nameUntitledSessions(sessionsDir: string): Promise<number> {
+	const projectDirs = await readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+	let titled = 0;
+	for (const entry of projectDirs) {
+		if (!entry.isDirectory()) continue;
+		for (const [name] of await sessionFiles(join(sessionsDir, entry.name))) {
+			const path = join(sessionsDir, entry.name, name);
+			if (await readSessionNameFrom(path)) continue;
+			await nameImportedSession(path);
+			if (await readSessionNameFrom(path)) titled += 1;
+		}
+	}
+	return titled;
+}
+
+/** 读会话已有的 session_info 名字（取最后一个）。 */
+async function readSessionNameFrom(path: string): Promise<string | undefined> {
+	const text = await readFile(path, "utf8").catch(() => "");
+	let name: string | undefined;
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		let entry: unknown;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		const record = entry as { type?: string; name?: string } | null;
+		if (record?.type === "session_info" && typeof record.name === "string" && record.name.trim())
+			name = record.name;
+	}
+	return name;
+}
+
+/**
+ * 给会话补一个标题（只写 Percho 这边的副本，不碰本地 Pi 原文件）。
+ * Pi CLI 不会自动命名，没名的会话在 Percho 侧栏会退回成项目名（一个项目下一排同名）。
+ * 取名规则与 packages/backend/src/session/naming.ts 一致：首行截 30 字，skill 命令还原成 /skill。
+ */
+async function nameImportedSession(path: string): Promise<void> {
+	const text = await readFile(path, "utf8");
+	let lastId = "";
+	let hasHeader = false;
+	let titled = false;
+	let firstUser = "";
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		let entry: unknown;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (typeof record.id === "string") lastId = record.id;
+		if (record.type === "session") hasHeader = true;
+		else if (record.type === "session_info" && typeof record.name === "string" && record.name.trim())
+			titled = true;
+		else if (!firstUser && record.type === "message") firstUser = firstUserText(record.message);
+	}
+	if (!hasHeader || titled || !firstUser) return;
+	const name = sessionNameFromUserText(firstUser);
+	if (!name) return;
+	const entry = {
+		type: "session_info",
+		id: randomUUID().replace(/-/g, "").slice(0, 8),
+		parentId: lastId,
+		timestamp: new Date().toISOString(),
+		name,
+	};
+	const body = text.endsWith("\n") ? text : `${text}\n`;
+	await writeFile(path, `${body}${JSON.stringify(entry)}\n`, "utf8");
+}
+/** 会话首条用户消息的文本；取名交给 sessionNameFromUserText，与顶栏自动命名同一套。 */
+function firstUserText(message: unknown): string {
+	if (!message || typeof message !== "object") return "";
+	const record = message as Record<string, unknown>;
+	if (record.role !== "user") return "";
+	const content = record.content;
+	const text =
+		typeof content === "string"
+			? content
+			: Array.isArray(content)
+				? content
+						.filter(
+							(block): block is Record<string, unknown> =>
+								!!block && typeof block === "object" && (block as Record<string, unknown>).type === "text",
+						)
+						.map((block) => (typeof block.text === "string" ? block.text : ""))
+						.join(" ")
+				: "";
+	return text;
 }

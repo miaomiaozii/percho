@@ -16,10 +16,17 @@ export function autoNameSession(session: AgentSession, event: AgentSessionEvent)
 					.filter((p) => p.type === "text")
 					.map((p) => ("text" in p ? p.text : ""))
 					.join(" ");
+	const name = sessionNameFromUserText(text);
+	if (!name) return;
+	session.setSessionName(name);
+}
+
+/** 取用户消息首行作会话标题（>30 字截断加省略号）；skill 命令先还原成 /skill。无可用标题返回空串。 */
+export function sessionNameFromUserText(text: string): string {
 	const invocation = parseExpandedSkillInvocation(text);
 	const firstLine = invocation
 		? (formatSkillCommand(invocation).split("\n")[0] ?? "").trim()
 		: (text.trim().split("\n")[0] ?? "").trim();
-	if (!firstLine) return;
-	session.setSessionName(firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine);
+	if (!firstLine) return "";
+	return firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine;
 }

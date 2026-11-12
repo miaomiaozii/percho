@@ -98,6 +98,123 @@ describe("syncLocalPiCredentials", () => {
 	});
 });
 
+describe("导入时补会话标题", () => {
+	function sessionLines(name: string, firstUserText?: string, existingName?: string): string {
+		const rows: Record<string, unknown>[] = [
+			{
+				type: "session",
+				version: 1,
+				id: `s-${name}`,
+				timestamp: "2026-11-01T00:00:00.000Z",
+				cwd: "C:\\proj",
+			},
+		];
+		let parent = `s-${name}`;
+		if (existingName !== undefined) {
+			rows.push({
+				type: "session_info",
+				id: "n0",
+				parentId: parent,
+				timestamp: "2026-11-01T00:00:01.000Z",
+				name: existingName,
+			});
+			parent = "n0";
+		}
+		if (firstUserText !== undefined) {
+			rows.push({
+				type: "message",
+				id: "m1",
+				parentId: parent,
+				timestamp: "2026-11-01T00:00:02.000Z",
+				message: { role: "user", content: [{ type: "text", text: firstUserText }] },
+			});
+			parent = "m1";
+		}
+		rows.push({
+			type: "message",
+			id: "m2",
+			parentId: parent,
+			timestamp: "2026-11-01T00:00:03.000Z",
+			message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+		});
+		return `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+	}
+
+	function putProject(name: string, project: string, content: string): { source: string; target: string } {
+		const { source, target } = scenario(`naming-${name}`);
+		mkdirSync(`${source}/sessions/${project}`, { recursive: true });
+		writeFileSync(`${source}/sessions/${project}/session-a.jsonl`, content);
+		return { source, target };
+	}
+
+	function names(path: string): string[] {
+		return readFileSync(path, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { type: string; name?: string })
+			.filter((entry) => entry.type === "session_info")
+			.map((entry) => String(entry.name));
+	}
+
+	it("没名字的会话导入后拿到首条用户消息首行作为标题", async () => {
+		const { source, target } = putProject(
+			"plain",
+			"p1",
+			sessionLines("plain", "移除棘轮的东西和产物，有点太难用了\n第二行不进标题"),
+		);
+		await syncLocalPiProject(target, "p1", { source });
+		expect(names(`${target}/sessions/p1/session-a.jsonl`)).toEqual(["移除棘轮的东西和产物，有点太难用了"]);
+	});
+
+	it("超长首行截 30 字加省略号，且不破坏行结构", async () => {
+		const { source, target } = putProject("long", "p2", sessionLines("long", "一".repeat(40)));
+		await syncLocalPiProject(target, "p2", { source });
+		const to = `${target}/sessions/p2/session-a.jsonl`;
+		expect(names(to)).toEqual([`${"一".repeat(30)}…`]);
+		const entries = readFileSync(to, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(entries.at(-1)?.parentId).toBe("m2");
+		expect(entries.every((entry) => typeof entry.id === "string")).toBe(true);
+	});
+
+	it("已有名字的会话不再补名字", async () => {
+		const { source, target } = putProject("titled", "p3", sessionLines("titled", "正文", "已有的名字"));
+		await syncLocalPiProject(target, "p3", { source });
+		expect(names(`${target}/sessions/p3/session-a.jsonl`)).toEqual(["已有的名字"]);
+	});
+
+	it("没有用户消息的会话不补名字，也不丢原有内容", async () => {
+		const { source, target } = putProject("empty", "p4", sessionLines("empty"));
+		await syncLocalPiProject(target, "p4", { source });
+		const to = `${target}/sessions/p4/session-a.jsonl`;
+		expect(names(to)).toEqual([]);
+		expect(readFileSync(to, "utf8")).toBe(sessionLines("empty"));
+	});
+
+	it("启动时给旧版本导进来的会话补名字", async () => {
+		const { source, target } = scenario("backfill");
+		mkdirSync(`${target}/sessions/p6`, { recursive: true });
+		writeFileSync(`${target}/sessions/p6/session-old.jsonl`, sessionLines("old", "早期导进来的会话"));
+		await autoSyncLocalPiProjects(target, { source });
+		expect(names(`${target}/sessions/p6/session-old.jsonl`)).toEqual(["早期导进来的会话"]);
+		// 重复跑不叠名字
+		await autoSyncLocalPiProjects(target, { source });
+		expect(names(`${target}/sessions/p6/session-old.jsonl`)).toEqual(["早期导进来的会话"]);
+	});
+
+	it("不碰本地 Pi 的原文件，重复同步也不会叠名字", async () => {
+		const { source, target } = putProject("src-intact", "p5", sessionLines("src-intact", "只同步一次"));
+		await syncLocalPiProject(target, "p5", { source });
+		const again = await syncLocalPiProject(target, "p5", { source });
+		expect(again.added).toBe(0);
+		expect(again.skipped).toBe(1);
+		expect(names(`${source}/sessions/p5/session-a.jsonl`)).toEqual([]);
+		expect(names(`${target}/sessions/p5/session-a.jsonl`)).toEqual(["只同步一次"]);
+	});
+});
+
 describe("resolveLocalPiSource", () => {
 	// 不依赖跑测试的机器上是否装了本地 Pi：用 PERCHO_LOCAL_PI_DIR 指定候选目录。
 	async function withSourceOverride(dir: string, run: () => Promise<void>): Promise<void> {
