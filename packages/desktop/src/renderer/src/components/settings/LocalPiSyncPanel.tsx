@@ -1,8 +1,4 @@
-import {
-	environmentKey,
-	encodePiSessionDir,
-	type LocalPiSyncProject,
-} from "@percho/shared";
+import { encodePiSessionDir, type LocalPiSyncProject } from "@percho/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getExecutionApi } from "../../environment-api";
 import { useEnvironment } from "../../environment-context";
@@ -26,7 +22,6 @@ export function LocalPiSyncPanel() {
 	const [projects, setProjects] = useState<LocalPiSyncProject[]>([]);
 	const [rows, setRows] = useState<Record<string, RowState>>({});
 
-	const envKey = environmentKey(environment);
 	const isLocal = environment.kind === "local";
 
 	const refresh = useCallback(async () => {
@@ -43,7 +38,7 @@ export function LocalPiSyncPanel() {
 			return;
 		}
 		refresh().catch(() => setAvailable(false));
-	}, [envKey, isLocal, refresh]);
+	}, [isLocal, refresh]);
 
 	const displayName = useCallback(
 		(name: string) => addedProjects.find((cwd) => encodePiSessionDir(cwd) === name) ?? null,
@@ -70,10 +65,7 @@ export function LocalPiSyncPanel() {
 		[environment, refresh],
 	);
 
-	const pending = useMemo(
-		() => projects.filter((project) => project.synced < project.sessions),
-		[projects],
-	);
+	const pending = useMemo(() => projects.filter((project) => project.synced < project.sessions), [projects]);
 	const anySyncing = Object.values(rows).some((row) => row.syncing);
 
 	return (
@@ -130,16 +122,10 @@ export function LocalPiSyncPanel() {
 									{row?.syncing ? (
 										<span className="shrink-0 text-ink-dim">{t("piSync.syncing")}</span>
 									) : row?.added ? (
-										<span className="shrink-0 text-ink-dim">
-											{t("piSync.done", { count: row.added })}
-										</span>
+										<span className="shrink-0 text-ink-dim">{t("piSync.done", { count: row.added })}</span>
 									) : null}
 									{added > 0 && (
-										<Button
-											size="sm"
-											disabled={anySyncing}
-											onClick={() => void sync([project.project])}
-										>
+										<Button size="sm" disabled={anySyncing} onClick={() => void sync([project.project])}>
 											{t("piSync.sync")}
 										</Button>
 									)}

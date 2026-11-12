@@ -263,7 +263,7 @@ try {
 		lock.stderr.on("data", (chunk) => {
 			lockError += chunk;
 		});
-		lock.stdin.write(Buffer.from(file).toString("base64") + "\n");
+		lock.stdin.write(`${Buffer.from(file).toString("base64")}\n`);
 		await wait(() => {
 			if (lock.exitCode !== null) throw new Error(`File lock helper failed: ${lockError}`);
 			return ready.includes("LOCK_READY");

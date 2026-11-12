@@ -192,10 +192,11 @@ export const SESSION_CHANNELS = {
 		import("./local-pi-sync").LocalPiSyncProjects
 	>(),
 	/** 将选定项目的会话从本地 Pi agent 目录拷入 Percho 存储 */
-	syncLocalPiProject: ch("localPi:syncProject", "environment", "mutation")<
-		{ project: string },
-		import("./local-pi-sync").LocalPiSyncResult
-	>({ project: input.id }),
+	syncLocalPiProject: ch(
+		"localPi:syncProject",
+		"environment",
+		"mutation",
+	)<{ project: string }, import("./local-pi-sync").LocalPiSyncResult>({ project: input.id }),
 	querySessionCatalog: ch(
 		"session:catalogQuery",
 		"environment",

@@ -78,7 +78,7 @@ export async function measureLiveSelection(renderer, snapshot, round, options) {
 			"(()=>{const d=__renderDiag,key=d.selectedTool.dataset.viewKey.slice(5);const tool=d.transcripts.getState().bySession[d.sid].messages.flatMap(m=>m.tools??[]).find(t=>t.key===key);return{id:tool.id,name:tool.name,output:tool.output}})()",
 		);
 		// A committed record is immutable in the event reducer; use the separately labelled local projection seam here.
-		const appended = selectedSource.output + "\nappended output";
+		const appended = `${selectedSource.output}\nappended output`;
 		await renderer.eval(
 			`(()=>{const d=__renderDiag,key=d.selectedTool.dataset.viewKey.slice(5);d.transcripts.setState(state=>{const s=state.bySession[d.sid];return{bySession:{...state.bySession,[d.sid]:{...s,messages:s.messages.map(m=>m.kind==='assistant'&&m.tools.some(t=>t.key===key)?{...m,tools:m.tools.map(t=>t.key===key?{...t,output:${JSON.stringify(appended)}}:t)}:m)}}}})})()`,
 		);

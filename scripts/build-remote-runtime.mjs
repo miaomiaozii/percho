@@ -66,7 +66,7 @@ try {
 		const manifest = JSON.parse(await readFile(pj, "utf8"));
 		if (manifest.devDependencies) {
 			delete manifest.devDependencies;
-			await writeFile(pj, JSON.stringify(manifest, null, 2) + "\n");
+			await writeFile(pj, `${JSON.stringify(manifest, null, 2)}\n`);
 		}
 	}
 	await run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);

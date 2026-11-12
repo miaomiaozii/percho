@@ -165,11 +165,11 @@ import { ModelPrefsService } from "./settings/model-prefs";
 import { makeQuotaService } from "./settings/quota";
 import { SettingsService } from "./settings/settings";
 import { slashCommandsForLoader, slashCommandsForSession } from "./slash-commands";
-import { privateDirectory } from "./storage/private-directory";
 import {
 	listLocalPiProjects as listLocalPiProjectsStorage,
 	syncLocalPiProject as syncLocalPiProjectStorage,
 } from "./storage/local-pi-sync";
+import { privateDirectory } from "./storage/private-directory";
 import type { LocalSessionPaths } from "./storage/session-paths";
 import {
 	makeChannelWatchExtension,
@@ -420,16 +420,12 @@ export class PiBackend {
 		return this.sessionCatalog;
 	}
 	/** 列出本地 Pi agent 目录中可手动同步的项目会话。 */
-	async listLocalPiProjects(): Promise<
-		import("@percho/shared").LocalPiSyncProjects
-	> {
+	async listLocalPiProjects(): Promise<import("@percho/shared").LocalPiSyncProjects> {
 		this.assertRunning();
 		return listLocalPiProjectsStorage(getAgentDir());
 	}
 	/** 将选定项目的会话从本地 Pi 拷入 Percho 存储，并刷新会话目录。 */
-	async syncLocalPiProject(
-		project: string,
-	): Promise<import("@percho/shared").LocalPiSyncResult> {
+	async syncLocalPiProject(project: string): Promise<import("@percho/shared").LocalPiSyncResult> {
 		this.assertRunning();
 		const result = await syncLocalPiProjectStorage(getAgentDir(), project);
 		if (result.added > 0) await this.getSessionCatalog().refresh();

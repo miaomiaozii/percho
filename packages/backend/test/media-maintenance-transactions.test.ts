@@ -81,7 +81,7 @@ beforeEach(async () => {
 			message: { role: "toolResult", toolName: "read", content: [{ type: "image", ...image }] },
 		},
 	];
-	original = rows.map((row) => JSON.stringify(row)).join("\r\n") + "\r\n\nnot json\r\n";
+	original = `${rows.map((row) => JSON.stringify(row)).join("\r\n")}\r\n\nnot json\r\n`;
 	await writeFile(file, original, { mode: 0o600 });
 });
 afterEach(async () => {
@@ -255,7 +255,7 @@ describe("单文件持久整理事务", () => {
 		});
 		await service.create(input());
 		await expect(service.execute(input().requestId)).rejects.toThrow("Source changed");
-		expect(await readFile(file, "utf8")).toBe(original + "new-user-data\n");
+		expect(await readFile(file, "utf8")).toBe(`${original}new-user-data\n`);
 		const record = await service.get(input().requestId);
 		if (!record) throw new Error("Missing record");
 		expect(await readFile(record.backup, "utf8")).toBe(original);
@@ -287,7 +287,7 @@ describe("单文件持久整理事务", () => {
 		});
 		await expect(service.execute("restore-appended")).rejects.toThrow(/changed|appended/);
 		await service.assertOpenAllowed(file);
-		expect(await readFile(file, "utf8")).toBe(compacted + "new-user-data\n");
+		expect(await readFile(file, "utf8")).toBe(`${compacted}new-user-data\n`);
 		expect(await readFile(done.backup, "utf8")).toBe(original);
 	});
 	it("中断发布后来源不符持久记录conflict，重建后仍不覆盖新增数据", async () => {

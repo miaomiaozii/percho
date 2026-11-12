@@ -132,5 +132,5 @@ export function renderingSession(events, cwd) {
 			});
 		}
 	}
-	return entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+	return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }

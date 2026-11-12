@@ -1,11 +1,7 @@
 import { copyFile, lstat, mkdir, readdir, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import type {
-	LocalPiSyncProject,
-	LocalPiSyncProjects,
-	LocalPiSyncResult,
-} from "@percho/shared";
+import type { LocalPiSyncProject, LocalPiSyncProjects, LocalPiSyncResult } from "@percho/shared";
 import { inside } from "./path-policy";
 
 /** Local Pi CLI agent directories, in sync priority order. */
@@ -41,20 +37,14 @@ const CREDENTIAL_FILES = ["models.json", "auth.json"] as const;
  * A file is copied when missing or when the source is newer; anything else is
  * left untouched. Best-effort per file: one unreadable file never blocks startup.
  */
-export async function syncLocalPiCredentials(
-	source: string,
-	target: string,
-): Promise<{ copied: string[] }> {
+export async function syncLocalPiCredentials(source: string, target: string): Promise<{ copied: string[] }> {
 	const copied: string[] = [];
 	await mkdir(target, { recursive: true });
 	for (const name of CREDENTIAL_FILES) {
 		try {
 			const from = join(source, name);
 			const to = join(target, name);
-			const [s, t] = await Promise.all([
-				stat(from).catch(() => null),
-				stat(to).catch(() => null),
-			]);
+			const [s, t] = await Promise.all([stat(from).catch(() => null), stat(to).catch(() => null)]);
 			if (!s?.isFile() || (t && t.mtimeMs >= s.mtimeMs)) continue;
 			const tmp = `${to}.local-pi-sync-tmp`;
 			await copyFile(from, tmp);
@@ -132,9 +122,7 @@ export async function listLocalPiProjects(target: string): Promise<LocalPiSyncPr
 		});
 	}
 	projects.sort(
-		(a, b) =>
-			(b.newestMtime ?? "").localeCompare(a.newestMtime ?? "") ||
-			a.project.localeCompare(b.project),
+		(a, b) => (b.newestMtime ?? "").localeCompare(a.newestMtime ?? "") || a.project.localeCompare(b.project),
 	);
 	return { source, available: true, projects };
 }
@@ -143,10 +131,7 @@ export async function listLocalPiProjects(target: string): Promise<LocalPiSyncPr
  * Percho storage. Files already present with a newer-or-equal mtime are skipped,
  * so re-syncing appends new local-Pi activity without clobbering local edits.
  */
-export async function syncLocalPiProject(
-	target: string,
-	project: string,
-): Promise<LocalPiSyncResult> {
+export async function syncLocalPiProject(target: string, project: string): Promise<LocalPiSyncResult> {
 	if (!isValidProjectName(project)) throw new Error(`Invalid project name: ${project}`);
 	const source = await resolveLocalPiSource(target);
 	if (!source) throw new Error("No local Pi agent directory found");

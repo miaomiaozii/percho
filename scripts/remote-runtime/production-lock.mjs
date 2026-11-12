@@ -100,7 +100,7 @@ export function runtimeBuildLock(lock, version) {
 	// stage lock — including sibling packages pulled in transitively — needs
 	// its directory entry. Sibling deps were already locked while visiting the
 	// alias; only the directory entries themselves are missing here.
-	for (const [key, entry] of Object.entries(packages)) {
+	for (const entry of Object.values(packages)) {
 		if (
 			!entry?.link ||
 			typeof entry.resolved !== "string" ||

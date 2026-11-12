@@ -120,7 +120,7 @@ try {
 	header.id = owner;
 	header.maintenanceUnknown = { retain: true };
 	lines[0] = JSON.stringify(header);
-	original = Buffer.from(lines.join("\n") + "\n\nnot json\r\n");
+	original = Buffer.from(`${lines.join("\n")}\n\nnot json\r\n`);
 	file = join(root, "agent", "sessions", `maintenance-${owner}.jsonl`);
 	await writeFile(file, original, { flag: "wx", mode: 0o600 });
 	await send("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -137,7 +137,7 @@ try {
 		for (;;) {
 			const value = await evaluate(expression);
 			if (value) return value;
-			if (Date.now() > end) throw new Error("Acceptance wait timed out: " + expression);
+			if (Date.now() > end) throw new Error(`Acceptance wait timed out: ${expression}`);
 			await new Promise((r) => setTimeout(r, 50));
 		}
 	};

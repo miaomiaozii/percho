@@ -29,6 +29,7 @@ const project: LocalPiSyncProject = {
 	project: "--C--Users-Administrator--",
 	sessions: 3,
 	synced: 2,
+	newestMtime: "2026-11-10T00:00:00.000Z",
 };
 
 let container: HTMLDivElement;

@@ -167,7 +167,7 @@ async function verifyMaintenance(session, socket, initialInstance) {
 		return JSON.stringify(entry);
 	});
 	legacy.push("", "invalid legacy line kept verbatim");
-	const original = Buffer.from(legacy.join("\n") + "\n"),
+	const original = Buffer.from(`${legacy.join("\n")}\n`),
 		hash = createHash("sha256").update(original).digest("hex");
 	await writeFile(file, original, { mode: 0o600, flag: "wx" });
 	const queries = [],

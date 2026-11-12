@@ -1,12 +1,12 @@
 import {
 	initializeLocalStorage,
 	inspectLocalStorage,
-	resolveLocalPiSource,
-	syncLocalPiCredentials,
 	type LocalStorageRecord,
 	migrateNavigation,
+	resolveLocalPiSource,
 	type StorageInspection,
 	type StorageProgress,
+	syncLocalPiCredentials,
 } from "@percho/backend";
 import type { StorageStartupAction, StorageStartupState } from "@percho/shared";
 import {

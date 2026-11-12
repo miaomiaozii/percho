@@ -1,0 +1,12 @@
+# Normalize line endings: LF in the repo and in every checkout.
+# Without this, Windows checkouts get CRLF (core.autocrlf=true), which makes
+# biome report a format error on every file.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.node binary
+*.dll binary
+*.dylib binary
+*.woff2 binary
+*.tgz binary
+*.zip binary

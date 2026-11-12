@@ -51,7 +51,7 @@ const moduleFile = production
 			),
 		).file
 	: null;
-if (production) assert((await realpath(moduleFile)).startsWith(host + "/"));
+if (production) assert((await realpath(moduleFile)).startsWith(`${host}/`));
 const toolCount = smoke || short ? 80 : 2600;
 assert.match(label, /^[a-z-]+$/);
 await build({
