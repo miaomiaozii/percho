@@ -96,14 +96,20 @@ describe("private directory selection", () => {
 				selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", name) }, true),
 			).not.toThrow();
 		expect(
-			selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta") }, true).target,
+			selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta") }, true)
+				.target,
 		).toBe(join(home, ".percho", "agent-beta"));
 		// dev 实例即使继承到正式存储也不采用该值，仍然回到自己的 agent-dev。
 		expect(
 			selectLocalStorage(home, false, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta") }).target,
 		).toBe(join(home, ".percho", "agent-dev"));
 		expect(() =>
-			selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta", "..") }, true),
+			selectLocalStorage(
+				home,
+				true,
+				{ PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta", "..") },
+				true,
+			),
 		).toThrow("PERCHO_LEGACY_AGENT_ENV");
 		expect(selectLocalStorage(home, false, {}).target).toBe(join(home, ".percho", "agent-dev"));
 		expect(selectLocalStorage(home, true, {}, true).target).toBe(join(home, ".percho", "agent-beta"));

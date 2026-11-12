@@ -42,9 +42,10 @@ export function selectLocalStorage(
 	// 从会话的 shell 里再次启动 app、从 app 里启动 dev 实例都算。只要它指向 Percho 自己的
 	// 存储目录就不是遗留配置，直接放行（目标仍按本实例的 packaged/beta 计算，不采用该值）。
 	// 指向外部目录（例如 ~/.pi/agent）仍然报错，并且仍会被 validateStorageSelection 拦住。
-	const perchoStorage = ["agent", "agent-beta", "agent-dev"].map((name) => resolve(join(home, ".percho", name)));
-	const selfInherited =
-		inherited !== undefined && perchoStorage.some((path) => resolve(inherited) === path);
+	const perchoStorage = ["agent", "agent-beta", "agent-dev"].map((name) =>
+		resolve(join(home, ".percho", name)),
+	);
+	const selfInherited = inherited !== undefined && perchoStorage.some((path) => resolve(inherited) === path);
 	if (value === undefined && inherited !== undefined && !selfInherited)
 		throw new Error(
 			"PERCHO_LEGACY_AGENT_ENV: Use PERCHO_AGENT_DIR or remove PI_CODING_AGENT_DIR before starting Percho.",
