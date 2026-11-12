@@ -17,6 +17,7 @@ export * from "./preview-excerpt";
 export * from "./remote-runtime";
 export * from "./runtime-node-policy";
 export * from "./session";
+export * from "./local-pi-sync";
 export * from "./session-catalog";
 export * from "./session-history";
 export * from "./session-media-maintenance";

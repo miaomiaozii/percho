@@ -186,6 +186,16 @@ export const SESSION_CHANNELS = {
 		void,
 		import("./session-catalog").SessionCatalogProjects
 	>(),
+	/** 列出本地 Pi agent 目录中按项目分组的会话，供手动同步 */
+	listLocalPiProjects: ch("localPi:listProjects", "environment", "read")<
+		void,
+		import("./local-pi-sync").LocalPiSyncProjects
+	>(),
+	/** 将选定项目的会话从本地 Pi agent 目录拷入 Percho 存储 */
+	syncLocalPiProject: ch("localPi:syncProject", "environment", "mutation")<
+		{ project: string },
+		import("./local-pi-sync").LocalPiSyncResult
+	>({ project: input.id }),
 	querySessionCatalog: ch(
 		"session:catalogQuery",
 		"environment",

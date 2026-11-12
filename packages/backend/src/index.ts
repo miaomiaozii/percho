@@ -105,6 +105,11 @@ export {
 } from "./storage/local-storage";
 export { migrateNavigation } from "./storage/preferences";
 export { type LocalSessionPaths, localSessionPaths } from "./storage/session-paths";
+export {
+	localPiSourceCandidates,
+	resolveLocalPiSource,
+	syncLocalPiCredentials,
+} from "./storage/local-pi-sync";
 export { makeShowImageTool, resolveShowImagePath, type ShowImageDetails } from "./tools/show-image";
 export { formatTodoList, makeTodoTool, normalizeTodos } from "./tools/todo";
 export { makeTodoReminderExtension } from "./tools/todo-reminder";

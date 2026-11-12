@@ -1,6 +1,8 @@
 import {
 	initializeLocalStorage,
 	inspectLocalStorage,
+	resolveLocalPiSource,
+	syncLocalPiCredentials,
 	type LocalStorageRecord,
 	migrateNavigation,
 	type StorageInspection,
@@ -72,6 +74,16 @@ export class StorageStartupController {
 			});
 			this.selection = await validateStorageSelection(this.options.selection);
 			process.env.PI_CODING_AGENT_DIR = this.selection.target;
+			// 模型/凭据跟随本地 Pi：每次启动把更新的 models.json / auth.json 同步进来（尽力而为）。
+			try {
+				const source = await resolveLocalPiSource(this.selection.target);
+				if (source) {
+					const { copied } = await syncLocalPiCredentials(source, this.selection.target);
+					if (copied.length > 0) console.log(`[local-pi-sync] ${copied.join(", ")}`);
+				}
+			} catch (error) {
+				console.warn("[local-pi-sync]", error);
+			}
 			const inspection = await inspectLocalStorage(this.selection, {
 				signal: this.abort?.signal,
 				onProgress: (p) => this.progress(p),

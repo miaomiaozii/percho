@@ -25,6 +25,7 @@ import {
 	GearIcon,
 	InfoIcon,
 	PuzzleIcon,
+	RefreshIcon,
 	ServerIcon,
 	SlidersIcon,
 	SubagentIcon,
@@ -38,6 +39,7 @@ import { ArchivedChatsPanel } from "./ArchivedChatsPanel";
 import { ExtensionsPanel } from "./extensions/ExtensionsPanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { LanObserverPanel } from "./LanObserverPanel";
+import { LocalPiSyncPanel } from "./LocalPiSyncPanel";
 import { McpPanel } from "./mcp/McpPanel";
 import { ProvidersPanel } from "./providers/ProvidersPanel";
 import { SkillsPanel } from "./SkillsPanel";
@@ -52,6 +54,7 @@ const STATIC_CATEGORIES = [
 	"extensions",
 	"remote",
 	"lan",
+	"piSync",
 	"about",
 ] as const satisfies readonly SettingsCategory[];
 
@@ -66,6 +69,7 @@ const CATEGORY_ICONS = {
 	remote: ServerIcon,
 	lan: DevicesIcon,
 	about: InfoIcon,
+	piSync: RefreshIcon,
 } satisfies Record<(typeof STATIC_CATEGORIES)[number], ComponentType<{ size?: number }>>;
 
 /** 面板注册表：新增分类 = 写一个面板组件 + 在这里登记（未登记显示 coming soon） */
@@ -80,6 +84,7 @@ const PANELS: Partial<Record<SettingsCategory, ComponentType>> = {
 	remote: RemoteConnectionPanel,
 	lan: LanObserverPanel,
 	about: AboutPanel,
+	piSync: LocalPiSyncPanel,
 };
 
 /** settings.panel 贡献的分类 id：plugin:<pluginName>:<contributionId>（spec §17） */

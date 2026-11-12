@@ -41,6 +41,7 @@ export type SettingsCategory =
 	| "remote"
 	| "lan"
 	| "about"
+	| "piSync"
 	// 插件自带设置页分类（settings.panel 贡献动态拼接，id = plugin:<pluginName>:<contributionId>）
 	| `plugin:${string}`;
 

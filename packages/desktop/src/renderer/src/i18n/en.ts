@@ -580,6 +580,20 @@ export const en: Messages = {
 		preserved:
 			"Preserved {invalid} invalid lines; skipped {skipped} images that cannot be safely compacted. User attachments and read images stay unchanged.",
 	},
+	piSync: {
+		title: "Local Pi Sync",
+		description: "Import sessions from your local Pi CLI, per project.",
+		modelsAuto: "Model config and credentials follow the local Pi automatically (models.json / auth.json).",
+		noSource: "No local Pi directory found (~/.pi/agent).",
+		remoteNote: "Available in local environments only.",
+		empty: "No project sessions in local Pi.",
+		sessions: "{count} sessions",
+		new: "{count} new",
+		sync: "Sync",
+		syncing: "Syncing…",
+		syncAll: "Sync all ({count})",
+		done: "Synced {count}",
+	},
 	archive: {
 		search: "Search titles or session IDs",
 		project: "Project",
@@ -671,6 +685,7 @@ export const en: Messages = {
 			mcp: "MCP",
 			extensions: "Extensions",
 			lan: "Cross-device",
+			piSync: "Pi sync",
 			about: "About",
 		},
 		moreInfo: "More info",
