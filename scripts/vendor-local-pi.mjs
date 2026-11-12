@@ -191,7 +191,9 @@ async function main() {
 		for (const entry of readdirSync(srcDir)) {
 			const from = join(srcDir, entry);
 			if (keepDirs.includes(entry) && statSync(from).isDirectory()) {
-				cpSync(from, join(destDir, entry), { recursive: true, filter: (s) => !s.endsWith(".map") });
+				// Keep .map files: dist JS references them via sourceMappingURL and
+				// vite/vitest fail hard when the referenced file is missing (CI).
+				cpSync(from, join(destDir, entry), { recursive: true });
 			} else if (keepFiles.includes(entry)) {
 				cpSync(from, join(destDir, entry));
 			}
