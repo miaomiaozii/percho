@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
 	LocalPiAutoSyncResult,
 	LocalPiAutoSyncSummary,
+	LocalPiRemoval,
+	LocalPiRestoreResult,
 	LocalPiSyncProject,
 	LocalPiSyncProjects,
 	LocalPiSyncResult,
@@ -151,6 +153,7 @@ export async function listLocalPiProjects(
 			synced,
 			inStorage: storageFiles.size,
 			auto: ledger.projects[name]?.auto === true,
+			removed: ledger.removals[name]?.length ?? 0,
 			newestMtime: newestMtime === null ? null : new Date(newestMtime).toISOString(),
 		});
 	}
@@ -177,9 +180,13 @@ export async function syncLocalPiProject(
 	const from = join(sourceRoot, project);
 	if (!inside(sourceRoot, from) || !(await isPlainDirectory(from)))
 		throw new Error(`Unknown local Pi project: ${project}`);
+	// 手动同步是显式动作，包括把“在 Percho 里删过”的会话找回（面板上会说清），
+	// 所以这里不拿墓碑拦，完事后再把这些名字从墓碑里清掉。
+	const importable = await sessionFileNames(from);
 	const result = await copyProjectSessions(from, join(target, "sessions", project), { nameImported: true });
 	const ledger = await readSyncLedger(target);
 	ledger.projects[project] = { auto: true, syncedAt: new Date().toISOString() };
+	dropTombstones(ledger, project, importable);
 	await writeSyncLedger(target, ledger);
 	return { project, ...result };
 }
@@ -227,7 +234,7 @@ export async function autoSyncLocalPiProjects(
 	const names = Object.entries(ledger.projects)
 		.filter(([name, entry]) => entry?.auto === true && isValidProjectName(name))
 		.map(([name]) => name);
-	const summary: LocalPiAutoSyncSummary = { attempted: names, added: 0, skipped: 0, failed: [] };
+	const summary: LocalPiAutoSyncSummary = { attempted: names, added: 0, skipped: 0, blocked: 0, failed: [] };
 	if (names.length === 0) return summary;
 	const source = options?.source ?? (await resolveLocalPiSource(target));
 	if (!source) return summary;
@@ -238,11 +245,14 @@ export async function autoSyncLocalPiProjects(
 		const from = join(sourceRoot, name);
 		if (!(await isPlainDirectory(from))) continue;
 		try {
-			const { added, skipped } = await copyProjectSessions(from, join(target, "sessions", name), {
+			// 启动自动同步不拿回用户删过的会话（墓碑），否则删了又出现。
+			const { added, skipped, blocked } = await copyProjectSessions(from, join(target, "sessions", name), {
 				nameImported: true,
+				blocked: tombstones(ledger, name),
 			});
 			summary.added += added;
 			summary.skipped += skipped;
+			summary.blocked += blocked;
 			if (added > 0) {
 				ledger.projects[name] = { auto: true, syncedAt: stamp };
 				changed = true;
@@ -260,11 +270,110 @@ interface LedgerProject {
 	auto: boolean;
 	syncedAt: string;
 }
+/** 墓碑：用户在 Percho 里删掉的会话，同步不再把它从本地 Pi 导回。 */
+interface LedgerRemoval {
+	file: string;
+	at: string;
+}
 interface SyncLedger {
 	version: 1;
 	projects: Record<string, LedgerProject>;
+	/** 按项目名分组的墓碑（删会话时记账，手动同步/显式恢复时清）. */
+	removals: Record<string, LedgerRemoval[]>;
 }
-/** 同步账本存在 Percho 存储根目录（不往本地 Pi 目录写东西）。 */
+/** 会话文件名的形状：<存储>/sessions/<项目>/<名字>.jsonl。 */
+function isSessionFileName(name: string): boolean {
+	return (
+		name.endsWith(".jsonl") &&
+		!isAbsolute(name) &&
+		!name.includes(sep) &&
+		!name.includes("/") &&
+		!name.includes("\\") &&
+		!name.includes("\0") &&
+		name !== "." &&
+		name !== ".."
+	);
+}
+function tombstones(ledger: SyncLedger, project: string): Set<string> {
+	return new Set((ledger.removals[project] ?? []).map((entry) => entry.file));
+}
+function dropTombstones(ledger: SyncLedger, project: string, names: Set<string>): void {
+	const list = ledger.removals[project];
+	if (!list) return;
+	const kept = list.filter((entry) => !names.has(entry.file));
+	if (kept.length === 0) delete ledger.removals[project];
+	else ledger.removals[project] = kept;
+}
+/** 列出所有墓碑，按删除时间从新到旧。 */
+export async function listLocalPiRemovals(target: string): Promise<LocalPiRemoval[]> {
+	const ledger = await readSyncLedger(target);
+	const removals: LocalPiRemoval[] = [];
+	for (const [project, list] of Object.entries(ledger.removals))
+		for (const entry of list) removals.push({ project, file: entry.file, at: entry.at });
+	removals.sort(
+		(a, b) => b.at.localeCompare(a.at) || a.project.localeCompare(b.project) || a.file.localeCompare(b.file),
+	);
+	return removals;
+}
+/**
+ * 记一条墓碑：会话在 Percho 存储里被删了，以后启动自动同步不再把它从本地 Pi 导回。
+ * 只有形如 <存储>/sessions/<项目>/<名字>.jsonl 的路径才记账，其他路径返回 false。
+ */
+export async function recordLocalPiRemoval(
+	target: string,
+	sessionFile: string,
+	options?: { source?: string },
+): Promise<boolean> {
+	const storageRoot = join(target, "sessions");
+	const resolved = resolve(sessionFile);
+	if (!inside(storageRoot, resolved)) return false;
+	const parts = relative(storageRoot, resolved).split(sep);
+	const [project, file] = parts;
+	if (parts.length !== 2 || typeof project !== "string" || typeof file !== "string") return false;
+	if (!isValidProjectName(project) || !isSessionFileName(file)) return false;
+	// 本地 Pi 里没有同名会话时记墓碑没意义（Percho 自己建的会话），不往账本里堆噪声。
+	const source = options?.source ?? (await resolveLocalPiSource(target));
+	if (!source) return false;
+	const mirror = await lstat(join(source, "sessions", project, file))
+		.then((info) => info.isFile())
+		.catch(() => false);
+	if (!mirror) return false;
+	const ledger = await readSyncLedger(target);
+	const list = ledger.removals[project] ?? [];
+	if (!list.some((entry) => entry.file === file)) list.push({ file, at: new Date().toISOString() });
+	ledger.removals[project] = list;
+	await writeSyncLedger(target, ledger);
+	return true;
+}
+/**
+ * 显式恢复一个墓碑：抹掉记账，并把本地 Pi 里还在的那份会话取回 Percho 存储。
+ * 本地 Pi 里已经没了就只抹记账（restored: false）。
+ */
+export async function restoreLocalPiRemoval(
+	target: string,
+	project: string,
+	file: string,
+	options?: { source?: string },
+): Promise<LocalPiRestoreResult> {
+	if (!isValidProjectName(project) || !isSessionFileName(file))
+		throw new Error(`Invalid session name: ${file}`);
+	const ledger = await readSyncLedger(target);
+	dropTombstones(ledger, project, new Set([file]));
+	await writeSyncLedger(target, ledger);
+	const source = options?.source ?? (await resolveLocalPiSource(target));
+	if (!source) return { project, file, restored: false };
+	const from = join(source, "sessions", project);
+	if (!(await isPlainDirectory(from))) return { project, file, restored: false };
+	const { added } = await copyProjectSessions(from, join(target, "sessions", project), {
+		nameImported: true,
+		only: new Set([file]),
+	});
+	const landed = await lstat(join(target, "sessions", project, file))
+		.then((info) => info.isFile())
+		.catch(() => false);
+	return { project, file, restored: added > 0 || landed };
+}
+/** Local Pi 同步账本存在 Percho 存储根目录（不往本地 Pi 目录写东西）。 */
 export function localPiSyncLedgerPath(target: string): string {
 	return join(target, LEDGER_FILE);
 }
@@ -280,9 +389,21 @@ async function readSyncLedger(target: string): Promise<SyncLedger> {
 				syncedAt: typeof entry.syncedAt === "string" ? entry.syncedAt : "",
 			};
 		}
-		return { version: 1, projects };
+		const removals: Record<string, LedgerRemoval[]> = {};
+		for (const [name, value] of Object.entries(parsed?.removals ?? {})) {
+			if (!isValidProjectName(name) || !Array.isArray(value)) continue;
+			const list: LedgerRemoval[] = [];
+			for (const item of value) {
+				if (!item || typeof item !== "object") continue;
+				const entry = item as Partial<LedgerRemoval>;
+				if (typeof entry.file !== "string" || !isSessionFileName(entry.file)) continue;
+				list.push({ file: entry.file, at: typeof entry.at === "string" ? entry.at : "" });
+			}
+			if (list.length > 0) removals[name] = list;
+		}
+		return { version: 1, projects, removals };
 	} catch {
-		return { version: 1, projects: {} };
+		return { version: 1, projects: {}, removals: {} };
 	}
 }
 async function writeSyncLedger(target: string, ledger: SyncLedger): Promise<void> {
@@ -296,12 +417,18 @@ async function writeSyncLedger(target: string, ledger: SyncLedger): Promise<void
 async function copyProjectSessions(
 	fromDir: string,
 	toDir: string,
-	options?: { nameImported?: boolean },
-): Promise<{ added: number; skipped: number }> {
+	options?: { nameImported?: boolean; blocked?: Set<string>; only?: Set<string> },
+): Promise<{ added: number; skipped: number; blocked: number }> {
 	await mkdir(toDir, { recursive: true });
 	let added = 0;
 	let skipped = 0;
+	let blocked = 0;
 	for (const [name, mtimeMs] of await sessionFiles(fromDir)) {
+		if (options?.only && !options.only.has(name)) continue;
+		if (options?.blocked?.has(name)) {
+			blocked += 1;
+			continue;
+		}
 		const toFile = join(toDir, name);
 		const existing = await lstat(toFile).catch(() => null);
 		if (existing?.isFile() && existing.mtimeMs >= mtimeMs) {
@@ -314,7 +441,15 @@ async function copyProjectSessions(
 		await rename(tmp, toFile);
 		added += 1;
 	}
-	return { added, skipped };
+	return { added, skipped, blocked };
+}
+/** 源目录里的会话文件名集合（用于墓碑对照）。 */
+async function sessionFileNames(dir: string): Promise<Set<string>> {
+	const names = new Set<string>();
+	for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+		if (entry.isFile() && isSessionFileName(entry.name)) names.add(entry.name);
+	}
+	return names;
 }
 /** 给存储里所有还没名字的会话补上标题，返回补了几个（递归扫项目目录）。 */
 async function nameUntitledSessions(sessionsDir: string): Promise<number> {

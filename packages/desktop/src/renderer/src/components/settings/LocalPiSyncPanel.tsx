@@ -1,4 +1,4 @@
-import { encodePiSessionDir, type LocalPiSyncProject } from "@percho/shared";
+import { encodePiSessionDir, type LocalPiRemoval, type LocalPiSyncProject } from "@percho/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getExecutionApi } from "../../environment-api";
 import { useEnvironment } from "../../environment-context";
@@ -24,20 +24,26 @@ export function LocalPiSyncPanel() {
 	const [available, setAvailable] = useState(false);
 	const [projects, setProjects] = useState<LocalPiSyncProject[]>([]);
 	const [rows, setRows] = useState<Record<string, RowState>>({});
+	const [removals, setRemovals] = useState<LocalPiRemoval[]>([]);
+	const [showRemovals, setShowRemovals] = useState(false);
+	const [restoring, setRestoring] = useState<string | null>(null);
 
 	const isLocal = environment.kind === "local";
 
 	const refresh = useCallback(async () => {
-		const result = await getExecutionApi(environment).listLocalPiProjects();
+		const api = getExecutionApi(environment);
+		const [result, removalList] = await Promise.all([api.listLocalPiProjects(), api.listLocalPiRemovals()]);
 		setSource(result.source);
 		setAvailable(result.available);
 		setProjects(result.projects);
+		setRemovals(removalList);
 	}, [environment]);
 
 	useEffect(() => {
 		if (!isLocal) {
 			setAvailable(false);
 			setProjects([]);
+			setRemovals([]);
 			return;
 		}
 		refresh().catch(() => setAvailable(false));
@@ -107,6 +113,21 @@ export function LocalPiSyncPanel() {
 	const autoCount = useMemo(() => projects.filter((project) => project.auto).length, [projects]);
 	const anyBusy = Object.values(rows).some((row) => row.busy);
 
+	const restore = useCallback(
+		async (removal: LocalPiRemoval) => {
+			setRestoring(`${removal.project}/${removal.file}`);
+			const api = getExecutionApi(environment);
+			try {
+				await api.restoreLocalPiRemoval({ project: removal.project, file: removal.file });
+			} catch {
+				// 失败时下面的刷新会回到真实状态
+			}
+			setRestoring(null);
+			await refresh().catch(() => undefined);
+		},
+		[environment, refresh],
+	);
+
 	return (
 		<section aria-label={t("piSync.title")} className="flex flex-col gap-3 text-ui-13">
 			<header className="flex flex-col gap-1">
@@ -162,6 +183,14 @@ export function LocalPiSyncPanel() {
 											{t("piSync.new", { count: added })}
 										</span>
 									)}
+									{project.removed > 0 && (
+										<span
+											className="shrink-0 rounded-lg bg-hover px-2 py-1 text-ink-dim"
+											title={t("piSync.removedHint")}
+										>
+											{t("piSync.removedCount", { count: project.removed })}
+										</span>
+									)}
 									{row?.busy ? (
 										<span className="shrink-0 text-ink-dim">{t("piSync.syncing")}</span>
 									) : row?.imported ? (
@@ -197,6 +226,37 @@ export function LocalPiSyncPanel() {
 						})}
 					</ul>
 					<p className="text-ink-faint">{t("piSync.autoNote", { count: autoCount })}</p>
+					{removals.length > 0 && (
+						<div className="flex flex-col gap-2">
+							<Button size="sm" onClick={() => setShowRemovals((value) => !value)}>
+								{t("piSync.removedTitle", { count: removals.length })}
+							</Button>
+							{showRemovals && (
+								<ul className="flex flex-col gap-1">
+									{removals.map((removal) => {
+										const key = `${removal.project}/${removal.file}`;
+										const cwd = displayName(removal.project);
+										return (
+											<li key={key} className="flex min-w-0 items-center gap-2 rounded-lg p-1">
+												<span
+													className="min-w-0 flex-1 truncate text-ink-dim"
+													title={`${cwd ?? removal.project} · ${removal.file}`}
+												>
+													{cwd ?? removal.project}
+													<span className="ml-1 text-ink-faint">{removal.file.replace(/\.jsonl$/, "")}</span>
+												</span>
+												<span className="shrink-0 text-ink-faint">{removal.at.slice(0, 10)}</span>
+												<Button size="sm" disabled={restoring !== null} onClick={() => void restore(removal)}>
+													{restoring === key ? t("piSync.restoring") : t("piSync.restore")}
+												</Button>
+											</li>
+										);
+									})}
+								</ul>
+							)}
+							<p className="text-ink-faint">{t("piSync.removedNote")}</p>
+						</div>
+					)}
 				</>
 			)}
 		</section>

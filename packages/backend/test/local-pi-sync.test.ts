@@ -6,8 +6,11 @@ import {
 	exportLocalPiProject,
 	LOCAL_PI_SOURCE_ENV,
 	listLocalPiProjects,
+	listLocalPiRemovals,
 	localPiSyncLedgerPath,
+	recordLocalPiRemoval,
 	resolveLocalPiSource,
+	restoreLocalPiRemoval,
 	setLocalPiAutoSync,
 	syncLocalPiCredentials,
 	syncLocalPiProject,
@@ -263,7 +266,7 @@ describe("项目会话双向同步与启动自动导入", () => {
 		put(`${source}/sessions/--proj-a--`, "s2.jsonl", '{"type":"message"}\n');
 
 		const result = await syncLocalPiProject(target, "--proj-a--", { source });
-		expect(result).toEqual({ project: "--proj-a--", added: 2, skipped: 0 });
+		expect(result).toEqual({ project: "--proj-a--", added: 2, skipped: 0, blocked: 0 });
 		expect(existsSync(`${target}/sessions/--proj-a--/s1.jsonl`)).toBe(true);
 		const ledger = JSON.parse(readFileSync(localPiSyncLedgerPath(target), "utf8")) as {
 			projects: Record<string, { auto: boolean }>;
@@ -293,7 +296,7 @@ describe("项目会话双向同步与启动自动导入", () => {
 		put(`${source}/sessions/--proj-c--`, "old.jsonl", "pi-newer\n", Date.now());
 
 		const result = await exportLocalPiProject(target, "--proj-c--", { source });
-		expect(result).toEqual({ project: "--proj-c--", added: 1, skipped: 1 });
+		expect(result).toEqual({ project: "--proj-c--", added: 1, skipped: 1, blocked: 0 });
 		expect(readFileSync(`${source}/sessions/--proj-c--/new.jsonl`, "utf8")).toBe("from-percho\n");
 		expect(readFileSync(`${source}/sessions/--proj-c--/old.jsonl`, "utf8")).toBe("pi-newer\n");
 	});
@@ -334,5 +337,136 @@ describe("项目会话双向同步与启动自动导入", () => {
 		expect(project?.synced).toBe(1);
 		expect(project?.inStorage).toBe(2);
 		expect(project?.auto).toBe(true);
+	});
+});
+
+describe("墓碑：在 Percho 里删过的会话不再自动灌回", () => {
+	function seedProject(source: string, project: string, files: string[]): void {
+		mkdirSync(`${source}/sessions/${project}`, { recursive: true });
+		for (const file of files) put(`${source}/sessions/${project}`, file, '{"type":"message"}\n');
+	}
+
+	it("记账后启动自动同步不再把它导回来", async () => {
+		const { source, target } = scenario("tombstone-auto-skip");
+		seedProject(source, "--proj-t1--", ["s1.jsonl", "s2.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t1--", { source });
+		expect(existsSync(`${target}/sessions/--proj-t1--/s1.jsonl`)).toBe(true);
+		// 模拟用户在 Percho 里删了 s1
+		const deleted = `${target}/sessions/--proj-t1--/s1.jsonl`;
+		rmSync(deleted);
+		expect(await recordLocalPiRemoval(target, deleted, { source })).toBe(true);
+
+		const summary = await autoSyncLocalPiProjects(target, { source });
+		expect(summary.added).toBe(0);
+		expect(summary.blocked).toBe(1);
+		expect(existsSync(`${target}/sessions/--proj-t1--/s1.jsonl`)).toBe(false);
+		expect(await listLocalPiRemovals(target)).toEqual([
+			{ project: "--proj-t1--", file: "s1.jsonl", at: expect.any(String) },
+		]);
+	});
+
+	it("手动导入是显式意图：把删过的会话找回来并抹掉墓碑", async () => {
+		const { source, target } = scenario("tombstone-manual-import");
+		seedProject(source, "--proj-t2--", ["s1.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t2--", { source });
+		const deleted = `${target}/sessions/--proj-t2--/s1.jsonl`;
+		rmSync(deleted);
+		await recordLocalPiRemoval(target, deleted, { source });
+
+		const again = await syncLocalPiProject(target, "--proj-t2--", { source });
+		expect(again.added).toBe(1);
+		expect(existsSync(`${target}/sessions/--proj-t2--/s1.jsonl`)).toBe(true);
+		expect(await listLocalPiRemovals(target)).toEqual([]);
+		const listing = await listLocalPiProjects(target, { source });
+		expect(listing.projects.find((item) => item.project === "--proj-t2--")?.removed).toBe(0);
+	});
+
+	it("单条恢复：抹掉墓碑并把本地 Pi 里那份取回", async () => {
+		const { source, target } = scenario("tombstone-restore-one");
+		seedProject(source, "--proj-t3--", ["s1.jsonl", "s2.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t3--", { source });
+		const deleted = `${target}/sessions/--proj-t3--/s2.jsonl`;
+		rmSync(deleted);
+		await recordLocalPiRemoval(target, deleted, { source });
+
+		const restored = await restoreLocalPiRemoval(target, "--proj-t3--", "s2.jsonl", { source });
+		expect(restored.restored).toBe(true);
+		expect(existsSync(`${target}/sessions/--proj-t3--/s2.jsonl`)).toBe(true);
+		expect(await listLocalPiRemovals(target)).toEqual([]);
+		// 另一条墓碑不受影响（本例没删 s1，所以自动同步只会补它）
+		const summary = await autoSyncLocalPiProjects(target, { source });
+		expect(summary.blocked).toBe(0);
+	});
+
+	it("本地 Pi 里已没有那份会话时只抹墓碑，不伪称恢复", async () => {
+		const { source, target } = scenario("tombstone-restore-missing-source");
+		seedProject(source, "--proj-t4--", ["s1.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t4--", { source });
+		const deleted = `${target}/sessions/--proj-t4--/s1.jsonl`;
+		rmSync(deleted);
+		await recordLocalPiRemoval(target, deleted, { source });
+		rmSync(`${source}/sessions/--proj-t4--/s1.jsonl`);
+
+		const restored = await restoreLocalPiRemoval(target, "--proj-t4--", "s1.jsonl", { source });
+		expect(restored.restored).toBe(false);
+		expect(existsSync(`${target}/sessions/--proj-t4--/s1.jsonl`)).toBe(false);
+		expect(await listLocalPiRemovals(target)).toEqual([]);
+	});
+
+	it("不记账的情形：路径不在存储会话区 / 不是 .jsonl / 层级不对", async () => {
+		const { source, target } = scenario("tombstone-invalid-shapes");
+		seedProject(source, "--proj-t5--", ["s1.jsonl"]);
+		expect(await recordLocalPiRemoval(target, `${target}/settings.json`, { source })).toBe(false);
+		mkdirSync(`${target}/sessions/--proj-t5--`, { recursive: true });
+		expect(await recordLocalPiRemoval(target, `${target}/sessions/--proj-t5--/note.txt`, { source })).toBe(
+			false,
+		);
+		expect(
+			await recordLocalPiRemoval(target, `${target}/sessions/--proj-t5--/nested/s1.jsonl`, { source }),
+		).toBe(false);
+		expect(await listLocalPiRemovals(target)).toEqual([]);
+		// 存储里还没这份（未曾导进来）但形状合法且本地 Pi 有：也记账，以后自动同步不会把它塞进来
+		expect(await recordLocalPiRemoval(target, `${target}/sessions/--proj-t5--/s1.jsonl`, { source })).toBe(
+			true,
+		);
+		const summary = await autoSyncLocalPiProjects(target, { source });
+		expect(summary.attempted).toEqual([]);
+		await setLocalPiAutoSync(target, "--proj-t5--", true);
+		expect((await autoSyncLocalPiProjects(target, { source })).blocked).toBe(1);
+		expect(existsSync(`${target}/sessions/--proj-t5--/s1.jsonl`)).toBe(false);
+	});
+
+	it("墓碑写进账本文件（本地 Pi 目录不留痕），重启后仍然生效", async () => {
+		const { source, target } = scenario("tombstone-persisted");
+		seedProject(source, "--proj-t6--", ["s1.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t6--", { source });
+		const deleted = `${target}/sessions/--proj-t6--/s1.jsonl`;
+		rmSync(deleted);
+		await recordLocalPiRemoval(target, deleted, { source });
+
+		const ledger = JSON.parse(readFileSync(localPiSyncLedgerPath(target), "utf8")) as {
+			version: number;
+			removals: Record<string, { file: string }[]>;
+		};
+		expect(ledger.removals["--proj-t6--"][0]?.file).toBe("s1.jsonl");
+		expect(existsSync(`${source}/local-pi-sync.json`)).toBe(false);
+		// 只读账本（不重新记）后的自动同步仍然不灌回
+		const summary = await autoSyncLocalPiProjects(target, { source });
+		expect(summary.blocked).toBe(1);
+		expect(existsSync(`${target}/sessions/--proj-t6--/s1.jsonl`)).toBe(false);
+	});
+
+	it("关掉自动同步不会弄丢墓碑", async () => {
+		const { source, target } = scenario("tombstone-survives-toggle");
+		seedProject(source, "--proj-t7--", ["s1.jsonl"]);
+		await syncLocalPiProject(target, "--proj-t7--", { source });
+		const deleted = `${target}/sessions/--proj-t7--/s1.jsonl`;
+		rmSync(deleted);
+		await recordLocalPiRemoval(target, deleted, { source });
+		await setLocalPiAutoSync(target, "--proj-t7--", false);
+		expect((await listLocalPiRemovals(target)).length).toBe(1);
+		await setLocalPiAutoSync(target, "--proj-t7--", true);
+		const summary = await autoSyncLocalPiProjects(target, { source });
+		expect(summary.blocked).toBe(1);
 	});
 });

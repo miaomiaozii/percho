@@ -581,6 +581,12 @@ export const zh = {
 		autoOn: "启动自动导入：开",
 		autoOff: "启动自动导入：关",
 		autoNote: "{count} 个项目会在启动时自动增量导入（手点过一次导入即登记）。",
+		removedCount: "已删 {count}",
+		removedHint: "这些会话在 Percho 里删过，启动自动同步不再把它们导回；对该项目点「导入」会全部找回。",
+		removedTitle: "在 Percho 里删过的会话（{count}）",
+		removedNote: "删除不会动本地 Pi 里的文件；要拿回来点恢复，或对该项目点导入。",
+		restore: "恢复",
+		restoring: "恢复中…",
 	},
 	archive: {
 		search: "搜索标题或会话 ID",

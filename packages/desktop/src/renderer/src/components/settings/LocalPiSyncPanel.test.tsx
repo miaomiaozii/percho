@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
 	sync: vi.fn(),
 	export: vi.fn(),
 	setAuto: vi.fn(),
+	listRemovals: vi.fn(),
+	restore: vi.fn(),
 	environment: { kind: "local" } as EnvironmentRef,
 }));
 vi.mock("../../i18n", () => ({ useT: () => (key: string) => key }));
@@ -22,6 +24,8 @@ vi.mock("../../environment-api", () => ({
 		syncLocalPiProject: mocks.sync,
 		exportLocalPiProject: mocks.export,
 		setLocalPiAutoSync: mocks.setAuto,
+		listLocalPiRemovals: mocks.listRemovals,
+		restoreLocalPiRemoval: mocks.restore,
 	}),
 }));
 vi.mock("../../stores/projects", () => ({
@@ -35,6 +39,7 @@ const project: LocalPiSyncProject = {
 	synced: 2,
 	inStorage: 1,
 	auto: false,
+	removed: 0,
 	newestMtime: "2026-11-10T00:00:00.000Z",
 };
 
@@ -48,6 +53,9 @@ beforeEach(() => {
 	mocks.sync.mockReset();
 	mocks.export.mockReset();
 	mocks.setAuto.mockReset();
+	mocks.listRemovals.mockReset();
+	mocks.listRemovals.mockResolvedValue([]);
+	mocks.restore.mockReset();
 	container = document.createElement("div");
 	document.body.appendChild(container);
 	root = createRoot(container);

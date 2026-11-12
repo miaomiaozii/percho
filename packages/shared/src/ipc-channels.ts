@@ -212,6 +212,20 @@ export const SESSION_CHANNELS = {
 		project: input.id,
 		auto: input.boolean,
 	}),
+	/** 列出在 Percho 里删过、因此同步不再导回的会话（墓碑） */
+	listLocalPiRemovals: ch("localPi:listRemovals", "environment", "read")<
+		void,
+		import("./local-pi-sync").LocalPiRemoval[]
+	>(),
+	/** 显式恢复一个墓碑（并把本地 Pi 里还在的那份取回存储） */
+	restoreLocalPiRemoval: ch(
+		"localPi:restoreRemoval",
+		"environment",
+		"mutation",
+	)<{ project: string; file: string }, import("./local-pi-sync").LocalPiRestoreResult>({
+		project: input.id,
+		file: input.id,
+	}),
 	querySessionCatalog: ch(
 		"session:catalogQuery",
 		"environment",

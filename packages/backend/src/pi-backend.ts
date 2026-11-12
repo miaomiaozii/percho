@@ -168,6 +168,9 @@ import { slashCommandsForLoader, slashCommandsForSession } from "./slash-command
 import {
 	exportLocalPiProject as exportLocalPiProjectStorage,
 	listLocalPiProjects as listLocalPiProjectsStorage,
+	listLocalPiRemovals as listLocalPiRemovalsStorage,
+	recordLocalPiRemoval,
+	restoreLocalPiRemoval as restoreLocalPiRemovalStorage,
 	setLocalPiAutoSync as setLocalPiAutoSyncStorage,
 	syncLocalPiProject as syncLocalPiProjectStorage,
 } from "./storage/local-pi-sync";
@@ -445,6 +448,21 @@ export class PiBackend {
 	): Promise<import("@percho/shared").LocalPiAutoSyncResult> {
 		this.assertRunning();
 		return setLocalPiAutoSyncStorage(getAgentDir(), project, auto);
+	}
+	/** 列出在 Percho 里删过、因此同步不再导回的会话（墓碑）。 */
+	async listLocalPiRemovals(): Promise<import("@percho/shared").LocalPiRemoval[]> {
+		this.assertRunning();
+		return listLocalPiRemovalsStorage(getAgentDir());
+	}
+	/** 显式恢复一个墓碑，并把本地 Pi 里还在的那份取回存储。 */
+	async restoreLocalPiRemoval(
+		project: string,
+		file: string,
+	): Promise<import("@percho/shared").LocalPiRestoreResult> {
+		this.assertRunning();
+		const result = await restoreLocalPiRemovalStorage(getAgentDir(), project, file);
+		if (result.restored) await this.getSessionCatalog().refresh();
+		return result;
 	}
 	private async archives(): Promise<SessionArchiveService> {
 		this.archiveService ??= new SessionArchiveService({
@@ -2059,6 +2077,12 @@ export class PiBackend {
 		await unlink(file).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw error;
 		});
+		// 墓碑：不记的话下次启动自动同步会把这个会话从本地 Pi 再导回来（删了又出现）。
+		try {
+			await recordLocalPiRemoval(getAgentDir(), file);
+		} catch (error) {
+			log.warn("local-pi tombstone record failed", file, error);
+		}
 		this.sourceSnapshots.invalidateOwner(sessionId);
 		await this.media.deleteOwner(sessionId);
 		if (sessionDir) await TraceRecorder.removeAll(sessionDir, sessionId);

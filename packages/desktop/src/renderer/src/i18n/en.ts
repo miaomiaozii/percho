@@ -606,6 +606,14 @@ export const en: Messages = {
 		autoOn: "Startup auto-import: on",
 		autoOff: "Startup auto-import: off",
 		autoNote: "{count} projects are imported incrementally at startup (registered by a manual import).",
+		removedCount: "{count} deleted",
+		removedHint:
+			"These sessions were deleted in Percho, so startup auto-import no longer brings them back; importing this project restores all of them.",
+		removedTitle: "Deleted in Percho ({count})",
+		removedNote:
+			"Deleting never touches the local Pi files. Restore pulls a copy back, as does importing the project.",
+		restore: "Restore",
+		restoring: "Restoring…",
 	},
 	archive: {
 		search: "Search titles or session IDs",
