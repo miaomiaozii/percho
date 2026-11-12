@@ -89,6 +89,22 @@ describe("private directory selection", () => {
 		expect(() => selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: "legacy" })).toThrow(
 			"PERCHO_LEGACY_AGENT_ENV",
 		);
+		// 应用会自己写 PI_CODING_AGENT_DIR，所以“自己拉自己”（更新器安装后 autoRunAppAfterInstall
+		// 重启、从会话 shell 里再启动）必然继承它；指向 Percho 自己的存储时不能再拦。
+		for (const name of ["agent", "agent-beta", "agent-dev"])
+			expect(() =>
+				selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", name) }, true),
+			).not.toThrow();
+		expect(
+			selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta") }, true).target,
+		).toBe(join(home, ".percho", "agent-beta"));
+		// dev 实例即使继承到正式存储也不采用该值，仍然回到自己的 agent-dev。
+		expect(
+			selectLocalStorage(home, false, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta") }).target,
+		).toBe(join(home, ".percho", "agent-dev"));
+		expect(() =>
+			selectLocalStorage(home, true, { PI_CODING_AGENT_DIR: join(home, ".percho", "agent-beta", "..") }, true),
+		).toThrow("PERCHO_LEGACY_AGENT_ENV");
 		expect(selectLocalStorage(home, false, {}).target).toBe(join(home, ".percho", "agent-dev"));
 		expect(selectLocalStorage(home, true, {}, true).target).toBe(join(home, ".percho", "agent-beta"));
 		expect(selectLocalStorage(home, true, {}, true).source).toBeNull();
