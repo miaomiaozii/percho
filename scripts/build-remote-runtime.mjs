@@ -58,6 +58,17 @@ try {
 	await writeFile(join(stage, "package-lock.json"), JSON.stringify(selected.lock, null, 2));
 	// Local pi: the selected lock references the vendored (patched) packages via link entries.
 	await cp(join(repo, "vendor"), join(stage, "vendor"), { recursive: true });
+	// npm reads the on-disk package.json of file: targets and installs their
+	// devDependencies too; the stage lock is production-only, so strip dev
+	// deps from the staged vendor manifests to keep the ideal tree in sync.
+	for (const name of await readdir(join(stage, "vendor", "pi", "packages"))) {
+		const pj = join(stage, "vendor", "pi", "packages", name, "package.json");
+		const manifest = JSON.parse(await readFile(pj, "utf8"));
+		if (manifest.devDependencies) {
+			delete manifest.devDependencies;
+			await writeFile(pj, JSON.stringify(manifest, null, 2) + "\n");
+		}
+	}
 	await run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
 	const require = createRequire(join(stage, "package.json"));
 	const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);

@@ -14,7 +14,13 @@ function vendorManifest(entry) {
 
 /** Select exact installed lock entries, without introducing another dependency/version solver. */
 export function runtimeBuildLock(lock, version) {
-	const dependencies = { "@earendil-works/pi-coding-agent": "1.5.0", "@earendil-works/pi-ai": "1.5.0" };
+	// The committed repo lock installs pi as file: links into vendor/pi/packages;
+	// the stage manifest must use the same file: specs so npm ci materializes
+	// real (non-symlink) copies of the vendored, patched pi packages.
+	const dependencies = {
+		"@earendil-works/pi-coding-agent": "file:vendor/pi/packages/coding-agent",
+		"@earendil-works/pi-ai": "file:vendor/pi/packages/ai",
+	};
 	const devDependencies = { esbuild: "0.25.12" };
 	const packages = {};
 	const production = new Set();
@@ -55,12 +61,67 @@ export function runtimeBuildLock(lock, version) {
 			if (child) visit(child, runtime);
 		}
 	};
-	for (const name of Object.keys(dependencies)) visit(locate("", name), true);
+	// npm treats file: dependencies as links. Its sync check requires the lock
+	// to carry each linked package as a bare {resolved, link} alias plus its
+	// own directory entry (the real manifest, minus devDependencies — the
+	// stage installs no dev code beyond the explicit build aliases below).
+	// Rewrite the entries before the walk so visit() traverses the vendor
+	// directories themselves and locks their on-disk manifests' deps.
+	for (const key of Object.keys(lock.packages)) {
+		const entry = lock.packages[key];
+		if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
+			continue;
+		const dirEntry = lock.packages[entry.resolved];
+		if (!dirEntry) {
+			throw new Error(`repo lock missing vendor directory entry ${entry.resolved}`);
+		}
+		const directory = { ...dirEntry };
+		delete directory.link;
+		delete directory.resolved;
+		delete directory.devDependencies;
+		lock.packages[entry.resolved] = directory;
+		lock.packages[key] = { resolved: entry.resolved, link: true };
+	}
+	for (const name of Object.keys(dependencies)) {
+		const key = locate("", name);
+		// The file: alias resolves to a vendor directory whose on-disk manifest
+		// drives the install; lock that directory (and its own deps) too.
+		const dirKey = lock.packages[key]?.resolved;
+		if (dirKey) visit(dirKey, true);
+		visit(key, true);
+	}
 	for (const name of Object.keys(devDependencies)) visit(locate("", name), false);
-	for (const [name, expected] of Object.entries({ ...dependencies, ...devDependencies })) {
+	// Arborist's #resolveLinks crashes when a link alias lacks its directory
+	// target in the lock ("reading 'extraneous'"), so every vendor alias in the
+	// stage lock — including sibling packages pulled in transitively — needs
+	// its directory entry. Sibling deps were already locked while visiting the
+	// alias; only the directory entries themselves are missing here.
+	for (const [key, entry] of Object.entries(packages)) {
+		if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
+			continue;
+		if (packages[entry.resolved]) continue;
+		const dirEntry = lock.packages[entry.resolved];
+		if (!dirEntry) {
+			throw new Error(`repo lock missing vendor directory entry ${entry.resolved}`);
+		}
+		const directory = { ...dirEntry };
+		delete directory.link;
+		delete directory.resolved;
+		delete directory.devDependencies;
+		packages[entry.resolved] = directory;
+	}
+	const expectedVendor = {
+		"@earendil-works/pi-coding-agent": ["vendor/pi/packages/coding-agent", "1.5.0"],
+		"@earendil-works/pi-ai": ["vendor/pi/packages/ai", "1.5.0"],
+	};
+	for (const [name, [vendorPath, expectedVersion]] of Object.entries(expectedVendor)) {
 		const entry = packages[`node_modules/${name}`];
-		const actual = entry?.version ?? vendorManifest(entry)?.version;
-		if (actual !== expected) throw new Error(`Runtime lock mismatch for ${name}`);
+		if (entry?.link !== true || entry?.resolved !== vendorPath) {
+			throw new Error(`Runtime lock mismatch for ${name}: expected file link to ${vendorPath}`);
+		}
+		if (vendorManifest(entry)?.version !== expectedVersion) {
+			throw new Error(`Runtime lock mismatch for ${name}`);
+		}
 	}
 	const typebox =
 		lock.packages["packages/backend/node_modules/typebox"] ?? lock.packages["node_modules/typebox"];
