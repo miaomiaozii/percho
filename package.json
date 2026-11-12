@@ -1,43 +1,47 @@
 {
-	"name": "percho",
-	"private": true,
-	"version": "0.1.0",
-	"description": "Desktop GUI for the Pi coding agent, built with Electron",
-	"license": "MIT",
-	"author": "Jaxton07",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/Jaxton07/percho.git"
-	},
-	"bugs": "https://github.com/Jaxton07/percho/issues",
-	"workspaces": [
-		"packages/*"
-	],
-	"scripts": {
-		"preinstall": "node scripts/vendor-local-pi.mjs",
-		"dev": "npm run dev -w packages/desktop",
-		"postinstall": "patch-package && node node_modules/electron/install.js",
-		"build": "npm run build -w packages/desktop",
-		"typecheck": "npm run typecheck --workspaces",
-		"test": "npm run test:release && npm run test --workspaces --if-present",
-		"test:release": "node --test scripts/release/*.test.mjs",
-		"splash:textures": "node scripts/generate-splash-textures.mjs",
-		"package:release": "node scripts/package-release.mjs",
-		"package:beta": "node scripts/package-release.mjs --channel beta",
-		"dist": "npm run package:release --",
-		"dist:beta": "npm run package:beta --",
-		"lint": "biome check ."
-	},
-	"engines": {
-		"node": ">=22.19"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^2.4.0",
-		"@electron/asar": "^3.4.1",
-		"patch-package": "^8.0.1",
-		"pngjs": "^7.0.0"
-	},
-	"allowScripts": {
-		"electron@43.3.0": true
-	}
+  "name": "percho",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Desktop GUI for the Pi coding agent, built with Electron",
+  "license": "MIT",
+  "author": "Jaxton07",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jaxton07/percho.git"
+  },
+  "bugs": "https://github.com/Jaxton07/percho/issues",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "preinstall": "node scripts/vendor-local-pi.mjs",
+    "dev": "npm run dev -w packages/desktop",
+    "postinstall": "patch-package && node node_modules/electron/install.js",
+    "build": "npm run build -w packages/desktop",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test:release && npm run test --workspaces --if-present",
+    "test:release": "node --test scripts/release/*.test.mjs",
+    "splash:textures": "node scripts/generate-splash-textures.mjs",
+    "package:release": "node scripts/package-release.mjs",
+    "package:beta": "node scripts/package-release.mjs --channel beta",
+    "dist": "npm run package:release --",
+    "dist:beta": "npm run package:beta --",
+    "lint": "biome check ."
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.0",
+    "@electron/asar": "^3.4.1",
+    "patch-package": "^8.0.1",
+    "pngjs": "^7.0.0"
+  },
+  "allowScripts": {
+    "electron@43.3.0": true
+  },
+  "dependencies": {
+    "marked": "18.0.11",
+    "marked-cjk-friendly": "0.1.2"
+  }
 }
