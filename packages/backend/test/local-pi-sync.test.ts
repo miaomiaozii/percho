@@ -13,6 +13,7 @@ import {
 	restoreLocalPiRemoval,
 	setLocalPiAutoSync,
 	syncLocalPiCredentials,
+	syncLocalPiPreferences,
 	syncLocalPiProject,
 } from "../src/storage/local-pi-sync";
 
@@ -468,5 +469,67 @@ describe("墓碑：在 Percho 里删过的会话不再自动灌回", () => {
 		await setLocalPiAutoSync(target, "--proj-t7--", true);
 		const summary = await autoSyncLocalPiProjects(target, { source });
 		expect(summary.blocked).toBe(1);
+	});
+});
+
+/**
+ * 偏好设置继承（shellPath / defaultTools / 默认模型等）：只填 Percho 这边还没有的键，
+ * 在 Percho 里改过的永远赢；Percho 自己管的压缩/接管/包加载配置从不从本地 Pi 覆盖。
+ */
+describe("偏好设置从本地 Pi 继承", () => {
+	it("只补缺失的键；Percho 改过的赢；Percho 自己管的配置不拿", async () => {
+		const { source, target } = scenario("prefs-inherit");
+		put(
+			source,
+			"settings.json",
+			JSON.stringify({
+				shellPath: "F:/Program Files/Git/bin/bash.exe",
+				defaultTools: ["+codemode", "-bash", "+powershell"],
+				defaultModel: "flash-next-turbo-iq3s",
+				defaultProvider: "strata-remote",
+				defaultThinkingLevel: "xhigh",
+				theme: "light",
+				retry: { enabled: true, maxRetries: 5 },
+				packages: ["npm:something-else"],
+				compressionTakeover: { enabled: true },
+				compaction: { enabled: false },
+			}),
+		);
+		put(target, "settings.json", JSON.stringify({ theme: "dark", compaction: { enabled: true } }));
+		const result = await syncLocalPiPreferences(source, target);
+		expect(result.copied.sort()).toEqual([
+			"defaultModel",
+			"defaultProvider",
+			"defaultThinkingLevel",
+			"defaultTools",
+			"retry",
+			"shellPath",
+		]);
+		const settings = JSON.parse(readFileSync(`${target}/settings.json`, "utf8"));
+		expect(settings.shellPath).toBe("F:/Program Files/Git/bin/bash.exe");
+		expect(settings.defaultTools).toEqual(["+codemode", "-bash", "+powershell"]);
+		expect(settings.theme).toBe("dark");
+		expect(settings.compaction).toEqual({ enabled: true });
+		expect(settings.packages).toBeUndefined();
+		expect(settings.compressionTakeover).toBeUndefined();
+		// 幂等：第二次什么都不写
+		expect((await syncLocalPiPreferences(source, target)).copied).toEqual([]);
+	});
+
+	it("本地 Pi 没有或有问题的 settings.json 就什么都不做", async () => {
+		const { source, target } = scenario("prefs-no-source");
+		expect((await syncLocalPiPreferences(source, target)).copied).toEqual([]);
+		expect(existsSync(`${target}/settings.json`)).toBe(false);
+		put(source, "settings.json", "{ not json");
+		expect((await syncLocalPiPreferences(source, target)).copied).toEqual([]);
+		expect(existsSync(`${target}/settings.json`)).toBe(false);
+	});
+
+	it("目标 settings.json 读不懂就不覆盖用户文件", async () => {
+		const { source, target } = scenario("prefs-broken-target");
+		put(source, "settings.json", JSON.stringify({ shellPath: "/bin/bash" }));
+		put(target, "settings.json", "{ broken");
+		expect((await syncLocalPiPreferences(source, target)).copied).toEqual([]);
+		expect(readFileSync(`${target}/settings.json`, "utf8")).toBe("{ broken");
 	});
 });

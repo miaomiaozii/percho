@@ -103,6 +103,7 @@ export {
 	resolveLocalPiSource,
 	setLocalPiAutoSync,
 	syncLocalPiCredentials,
+	syncLocalPiPreferences,
 } from "./storage/local-pi-sync";
 export {
 	initializeLocalStorage,

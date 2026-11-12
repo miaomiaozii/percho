@@ -87,6 +87,64 @@ export async function syncLocalPiCredentials(source: string, target: string): Pr
 	}
 	return { copied };
 }
+/**
+ * 环境类偏好从本地 Pi 的 settings.json 带过来（shell 路径、工具开关、模型选择等）。
+ * 只填 Percho 这边还没有的键：在 Percho 里改过的永远赢，本地 Pi 的只当初始值。
+ * Percho 自己管的压缩/接管/包加载配置（compaction*、compressionTakeover、packages）
+ * 从不从本地 Pi 覆盖。
+ */
+export const PREFERENCE_KEYS = [
+	"shellPath",
+	"defaultTools",
+	"enabledModels",
+	"defaultProvider",
+	"defaultModel",
+	"defaultThinkingLevel",
+	"retry",
+	"theme",
+	"terminal",
+	"showCacheMissNotices",
+] as const;
+
+export async function syncLocalPiPreferences(source: string, target: string): Promise<{ copied: string[] }> {
+	const copied: string[] = [];
+	let incoming: Record<string, unknown>;
+	try {
+		incoming = JSON.parse(await readFile(join(source, "settings.json"), "utf8")) as Record<string, unknown>;
+	} catch {
+		return { copied }; // 本地 Pi 没有或有问题的 settings.json：不做任何事
+	}
+	if (!incoming || typeof incoming !== "object") return { copied };
+	const to = join(target, "settings.json");
+	let current: Record<string, unknown> = {};
+	let existed = false;
+	const existing = await stat(to).catch(() => null);
+	if (existing?.isFile()) {
+		try {
+			const parsed = JSON.parse(await readFile(to, "utf8")) as unknown;
+			if (parsed && typeof parsed === "object") {
+				current = parsed as Record<string, unknown>;
+				existed = true;
+			} else {
+				return { copied }; // 不是对象：不碰用户文件
+			}
+		} catch {
+			return { copied }; // 目标 settings.json 读不了或坏了：不覆盖用户文件
+		}
+	}
+	for (const key of PREFERENCE_KEYS)
+		if (current[key] === undefined && incoming[key] !== undefined) {
+			current[key] = incoming[key];
+			copied.push(key);
+		}
+	if (copied.length === 0) return { copied };
+	await mkdir(target, { recursive: true });
+	if (existed) await copyFile(to, `${to}.preference-sync-bak`).catch(() => {});
+	const tmp = `${to}.local-pi-sync-tmp`;
+	await writeFile(tmp, `${JSON.stringify(current, null, 2)}\n`);
+	await rename(tmp, to);
+	return { copied };
+}
 async function sessionFiles(dir: string): Promise<Map<string, number>> {
 	const files = new Map<string, number>();
 	let names: string[];

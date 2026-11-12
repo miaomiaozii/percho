@@ -8,6 +8,7 @@ import {
 	type StorageInspection,
 	type StorageProgress,
 	syncLocalPiCredentials,
+	syncLocalPiPreferences,
 } from "@percho/backend";
 import type { StorageStartupAction, StorageStartupState } from "@percho/shared";
 import {
@@ -161,6 +162,11 @@ export class StorageStartupController {
 			if (target && source) {
 				const { copied } = await syncLocalPiCredentials(source, target);
 				if (copied.length > 0) console.log(`[local-pi-sync] ${copied.join(", ")}`);
+				// 环境类偏好（shellPath / defaultTools / 默认模型等）同样从本地 Pi 带过来，
+				// 但只填 Percho 这边还没有的键，所以在 Percho 里改过的不会被顶掉。
+				const prefs = await syncLocalPiPreferences(source, target);
+				if (prefs.copied.length > 0)
+					console.log(`[local-pi-sync] 偏好设置继承本地 Pi：${prefs.copied.join(", ")}`);
 			}
 			// 会话不自动双向：只对“手点过同步”的项目做启动增量导入（账本在当前存储根下）。
 			if (target) {
