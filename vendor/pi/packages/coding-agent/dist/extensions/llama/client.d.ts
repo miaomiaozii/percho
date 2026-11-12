@@ -49,6 +49,8 @@ export declare class LlamaClient {
     readonly serverUrl: string;
     private readonly apiKey;
     constructor(serverUrl: string, apiKey?: string);
+    /** Fetches from the server, naming the server and the network-level cause when the connection fails. */
+    private fetchServer;
     private request;
     list(options?: {
         reload?: boolean;

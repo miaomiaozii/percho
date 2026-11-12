@@ -116,7 +116,7 @@ function matchOldSide(src, pos, body) {
 	return oldLen;
 }
 
-function applyHunk(src, hunk, label, filePath) {
+function applyHunk(src, hunk, label, filePath, report) {
 	const base = hunk.baseStart - 1;
 	const newSide = hunk.body.filter((e) => e.t !== "del").map((e) => e.x); // ctx + add, in order
 	for (let off = -25; off <= 25; off++) {
@@ -127,10 +127,30 @@ function applyHunk(src, hunk, label, filePath) {
 		src.splice(pos, oldLen, ...newSide);
 		return { pos, oldLen, addLen: newSide.length };
 	}
-	throw new Error(`${label}: hunk at line ${hunk.oldStart} did not apply in ${filePath}`);
+	// Fallback: whitespace-insensitive scan of the whole file. Dist output moves
+	// between Pi releases (regenerated bundles), but the surrounding statements
+	// usually survive. Every fallback hit is logged for review.
+	const oldSide = hunk.body.filter((e) => e.t !== "add").map((e) => e.x.trim());
+	if (oldSide.length > 0) {
+		for (let pos = 0; pos + oldSide.length <= src.length; pos++) {
+			let ok = true;
+			for (let k = 0; k < oldSide.length; k++) {
+				if (src[pos + k].trim() !== oldSide[k]) {
+					ok = false;
+					break;
+				}
+			}
+			if (!ok) continue;
+			src.splice(pos, oldSide.length, ...newSide);
+			report.push(`${label}: ${filePath} hunk at line ${hunk.oldStart} applied fuzzily at ${pos + 1}`);
+			return { pos, oldLen: oldSide.length, addLen: newSide.length };
+		}
+	}
+	report.push(`${label}: ${filePath} hunk at line ${hunk.oldStart} FAILED`);
+	return null;
 }
 
-function applyUnifiedDiff(baseDir, patchText, label) {
+function applyUnifiedDiff(baseDir, patchText, label, failures) {
 	const files = parsePatch(patchText);
 	for (const f of files) {
 		const target = join(baseDir, f.path);
@@ -139,7 +159,8 @@ function applyUnifiedDiff(baseDir, patchText, label) {
 		let shift = 0;
 		for (const hunk of f.hunks) {
 			hunk.baseStart = hunk.oldStart + shift;
-			const res = applyHunk(src, hunk, label, f.path);
+			const res = applyHunk(src, hunk, label, f.path, failures);
+			if (!res) continue;
 			shift += res.addLen - res.oldLen + (res.pos - (hunk.baseStart - 1));
 		}
 		writeFileSync(target, src.join("\n"), "utf8");
@@ -152,7 +173,9 @@ function applyUnifiedDiff(baseDir, patchText, label) {
 async function main() {
 	const args = parseArgs(process.argv);
 	const vendorDir = join(ROOT, "vendor", "pi", "packages");
-	const patchDir = join(ROOT, "vendor", "pi-patches");
+	// Pi behaviour patches live with the repo's patch-package patches so the
+	// local-vendor path and the npm/patch-package path stay in sync.
+	const patchDir = join(ROOT, "patches");
 
 	if (!existsSync(join(args.piSrc, "packages"))) {
 		// CI / clean checkout: the patched vendor tree is committed to the repo,
@@ -221,13 +244,18 @@ async function main() {
 	for (const name of Object.keys(pkgDirName)) {
 		cpSync(join(vendorDir, name), join(nm, pkgDirName[name]), { recursive: true });
 	}
-	for (const file of [
-		"@earendil-works+pi-coding-agent+1.5.0.patch",
-		"@earendil-works+pi-agent-core+1.5.0.patch",
-	]) {
+	const patchFailures = [];
+	for (const file of readdirSync(patchDir)
+		.filter((f) => f.startsWith("@earendil-works+pi-") && f.endsWith(".patch"))
+		.sort()) {
 		const p = join(patchDir, file);
-		if (!existsSync(p)) continue;
-		applyUnifiedDiff(scratch, readFileSync(p, "utf8"), file.replace(/\.patch$/, ""));
+		applyUnifiedDiff(scratch, readFileSync(p, "utf8"), file.replace(/\.patch$/, ""), patchFailures);
+	}
+	for (const line of patchFailures) console.log(`  ${line}`);
+	const failed = patchFailures.filter((line) => line.includes(" FAILED"));
+	if (failed.length > 0) {
+		console.error(`Vendor patching incomplete: ${failed.length} hunk(s) failed. Fix the patches or update them for this Pi version.`);
+		process.exit(1);
 	}
 	// Copy patched dist back into the vendored packages.
 	for (const [name, dirName] of Object.entries(pkgDirName)) {

@@ -150,6 +150,7 @@ export declare class ExtensionRunner {
     reportUnhandledMcpServers(): void;
     hasHandlers(eventType: string): boolean;
     getMessageRenderer(customType: string): MessageRenderer | undefined;
+    /** Markdown transformers in extension load order; each one leaves Markdown of unregistered surfaces unchanged. */
     getMarkdownTransformers(): MarkdownTransformer[];
     /** Renderers of calls to `toolName`: extension resolvers in load order, then `base`. */
     resolveToolRenderers(toolName: string, base: () => ToolRenderers | undefined): ToolRenderers | undefined;

@@ -89,6 +89,20 @@ function estimateMessagesTokens(messages) {
 // ============================================================================
 // AgentSession Class
 // ============================================================================
+/**
+ * Index of the model to cycle to, or undefined when there is nothing to switch to.
+ * When the current model is not in the list (currentIndex -1), forward picks the first
+ * entry and backward the last, so a one-entry list still selects its only model.
+ */
+function getNextCycleIndex(currentIndex, length, direction) {
+    if (length === 0)
+        return undefined;
+    if (currentIndex === -1)
+        return direction === "forward" ? 0 : length - 1;
+    if (length === 1)
+        return undefined;
+    return direction === "forward" ? (currentIndex + 1) % length : (currentIndex - 1 + length) % length;
+}
 export class AgentSession {
     agent;
     sessionManager;
@@ -101,6 +115,7 @@ export class AgentSession {
     _idleLease;
     _idleOperationCount = 0;
     _idleDisposed = false;
+    _promptPreflightCount = 0;
     _agentRunAbortRequested = false;
     _idleWaitPromise;
     _resolveIdleWait;
@@ -108,6 +123,8 @@ export class AgentSession {
     _steeringMessages = [];
     /** Tracks pending follow-up messages for UI display. Removed when delivered. */
     _followUpMessages = [];
+    /** Queued user messages whose images are normalized when they are delivered. */
+    _queuedMessagesWithImages = new WeakSet();
     /** Messages queued to be included with the next user prompt as context ("asides"). */
     _pendingNextTurnMessages = [];
     /** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -462,6 +479,16 @@ export class AgentSession {
         if (this._hostResumeBatch) this._hostAwaitingUser = false;
         if (this._hostPause && this._hostResumeBatch) this._setHostPause(null);
         this._reconcileHostPending(raw);
+        // Normalize queued images before policy estimation or publication; candidates may be copied.
+        const normalizeQueuedImages = async (messages) => {
+            for (const message of messages) {
+                if (this._queuedMessagesWithImages.has(message)) {
+                    this._queuedMessagesWithImages.delete(message);
+                    await this._normalizeQueuedMessageImages(message);
+                }
+            }
+        };
+        await normalizeQueuedImages(raw);
         this._hostRequestRoute = undefined;
         this._hostRequestRouteError = undefined;
         this._hostDispatchSnapshot = undefined;
@@ -481,6 +508,7 @@ export class AgentSession {
             if (this._hostResumeBatch && !this._hostPause) {
                 raw = this.agent.orderPendingMessages([...raw, ...this.agent.getQueuedMessages()]);
                 this._hostRequestPending = raw;
+                await normalizeQueuedImages(raw);
                 if (!this._hostRequestRouteError) await this._checkHostRequest(raw, signal, false, effectiveModel);
             }
         }
@@ -603,25 +631,50 @@ export class AgentSession {
             return this._modelRuntime.getPhysicalModel(message.provider, message.model);
         return model?.provider === message.provider && model.id === message.model ? model : undefined;
     }
-    /**
-     * Record the selection on the current branch when the branch implies another one, so a resume
-     * restores it. Tree navigation can leave the latest `model_change` on another branch; responses
-     * cannot record a virtual selection because they name physical models. Responses do record a
-     * physical selection unless the branch holds a virtual one; checking a physical selection against
-     * responses would record it on every prompt while `prepareRequest` redirects to another model.
-     */
+    /** Record the live model and thinking level on the current branch, so a resume restores them. */
     _recordSelection() {
+        const branch = this.sessionManager.getBranch();
+        this._recordModelSelection(branch);
+        this._recordThinkingLevel(branch);
+    }
+    /**
+     * Record the model on the current branch when the branch implies another one. Tree navigation
+     * can leave the latest `model_change` on another branch; responses cannot record a virtual
+     * selection because they name physical models. Responses do record a physical selection unless
+     * the branch holds a virtual one; checking a physical selection against responses would record
+     * it on every prompt while `prepareRequest` redirects to another model.
+     */
+    _recordModelSelection(branch) {
         const model = this.model;
         if (!model)
             return;
         const getModel = (provider, modelId) => this._modelRuntime.getModel(provider, modelId);
-        const recorded = getBranchSelection(this.sessionManager.getBranch(), getModel);
+        const recorded = getBranchSelection(branch, getModel);
         if (!recorded || (recorded.provider === model.provider && recorded.modelId === model.id))
             return;
         const recordedModel = getModel(recorded.provider, recorded.modelId);
         if (!isVirtualModel(model) && !(recordedModel && isVirtualModel(recordedModel)))
             return;
         this.sessionManager.appendModelChange(model.provider, model.id);
+    }
+    /**
+     * Record the thinking level on the current branch when the branch implies another one (#11451).
+     * Tree navigation can leave the latest `thinking_level_change` on another branch. The recorded
+     * level is compared after clamping to the current model, so a level clamped on resume (e.g.
+     * `xhigh` running as `high`) is not recorded over the requested one.
+     */
+    _recordThinkingLevel(branch) {
+        const recorded = branch.findLast((entry) => entry.type === "thinking_level_change");
+        if (!recorded)
+            return;
+        const recordedLevel = recorded.thinkingLevel;
+        const availableLevels = this.getAvailableThinkingLevels();
+        const effective = availableLevels.includes(recordedLevel)
+            ? recordedLevel
+            : this._clampThinkingLevel(recordedLevel, availableLevels);
+        if (effective === this.thinkingLevel)
+            return;
+        this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
     }
     /** The model whose limits apply to the conversation. */
     _limitsModel() {
@@ -1078,21 +1131,25 @@ export class AgentSession {
         if (!this._hostPolicy && event.type === "message_start" && event.message.role === "user") {
             this._overflowRecoveryAttempted = false;
             const messageText = contentText(event.message.content, "");
-            if (messageText) {
-                // Check steering queue first
-                const steeringIndex = this._steeringMessages.indexOf(messageText);
-                if (steeringIndex !== -1) {
-                    this._steeringMessages.splice(steeringIndex, 1);
+            // Check steering queue first
+            const steeringIndex = this._steeringMessages.indexOf(messageText);
+            if (steeringIndex !== -1) {
+                this._steeringMessages.splice(steeringIndex, 1);
+                this._emitQueueUpdate();
+            }
+            else {
+                // Check follow-up queue
+                const followUpIndex = this._followUpMessages.indexOf(messageText);
+                if (followUpIndex !== -1) {
+                    this._followUpMessages.splice(followUpIndex, 1);
                     this._emitQueueUpdate();
                 }
-                else {
-                    // Check follow-up queue
-                    const followUpIndex = this._followUpMessages.indexOf(messageText);
-                    if (followUpIndex !== -1) {
-                        this._followUpMessages.splice(followUpIndex, 1);
-                        this._emitQueueUpdate();
-                    }
-                }
+            }
+            // Normalize queued images at delivery, before events and persistence see the message,
+            // so they get the same resize as idle prompts with the current model's limits (#11738).
+            if (this._queuedMessagesWithImages.has(event.message)) {
+                this._queuedMessagesWithImages.delete(event.message);
+                await this._normalizeQueuedMessageImages(event.message);
             }
         }
         // Emit to extensions first, then notify public listeners.
@@ -1367,7 +1424,6 @@ export class AgentSession {
         this._idleLease = undefined;
         this._hostGeneration = (this._hostGeneration ?? 0) + 1;
         this._hostDisposed = true;
-        this.abortCompaction();
         try {
             this.abortRetry();
             this.abortCompaction();
@@ -2069,14 +2125,34 @@ export class AgentSession {
                 return;
             }
         }
-        if (this._compactionAbortController !== undefined) {
+        if (this._compactionAbortController !== undefined || this._branchSummaryAbortController !== undefined) {
             throw new Error("Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
         }
+        // Reserve the context through async input hooks and auth checks so tree navigation cannot
+        // start meanwhile (#9154). _startRun marks the run active synchronously, so there is no gap.
+        this._promptPreflightCount++;
+        let trigger;
+        try {
+            trigger = await this._preparePrompt(text, options);
+        }
+        finally {
+            this._promptPreflightCount--;
+        }
+        if (trigger)
+            await this._startRun(trigger, () => preflightResult?.("started"));
+    }
+    /**
+     * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+     * Returns the run trigger, or undefined when the prompt was handled or queued.
+     */
+    async _preparePrompt(text, options) {
+        const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+        const preflightResult = options?.preflightResult;
         // Emit input event for extension interception (before skill/template expansion)
         const processedInput = await this._runInputHandlers(text, options?.images, options?.source ?? "interactive", this.isStreaming ? options?.streamingBehavior : undefined, options?.videos);
         if (!processedInput) {
             preflightResult?.("handled");
-            return;
+            return undefined;
         }
         const { text: currentText, images: currentImages, videos: currentVideos } = processedInput;
         // Expand skill commands (/skill:name args) and prompt templates (/template args)
@@ -2106,7 +2182,7 @@ export class AgentSession {
                 await this._queueSteer(expandedText, currentImages, currentVideos);
             }
             preflightResult?.("queued");
-            return;
+            return undefined;
         }
         // Validate model
         if (!this.model) {
@@ -2123,7 +2199,7 @@ export class AgentSession {
             }
             throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
         }
-        await this._startRun({ messageType: "user", prompt: expandedText, images: currentImages, videos: currentVideos }, () => preflightResult?.("started"));
+        return { messageType: "user", prompt: expandedText, images: currentImages, videos: currentVideos };
     }
     /**
      * Try to execute an extension command. Returns true if command was found and executed.
@@ -2234,11 +2310,10 @@ export class AgentSession {
         if (videos) {
             content.push(...videos);
         }
-        this.agent.steer({
-            role: "user",
-            content,
-            timestamp: Date.now(),
-        });
+        const message = { role: "user", content, timestamp: Date.now() };
+        if (images?.length)
+            this._queuedMessagesWithImages.add(message);
+        this.agent.steer(message);
         this._emitQueueUpdate();
     }
     /**
@@ -2253,8 +2328,27 @@ export class AgentSession {
         if (videos) {
             content.push(...videos);
         }
-        this.agent.followUp({ role: "user", content, timestamp: Date.now() });
+        const message = { role: "user", content, timestamp: Date.now() };
+        if (images?.length)
+            this._queuedMessagesWithImages.add(message);
+        this.agent.followUp(message);
         this._emitQueueUpdate();
+    }
+    /** Replace a queued user message's images in place with normalized ones, appending hints to its text. */
+    async _normalizeQueuedMessageImages(message) {
+        if (typeof message.content === "string")
+            return;
+        const [first, ...rest] = message.content;
+        if (first?.type !== "text")
+            return;
+        const images = rest.filter((block) => block.type === "image");
+        const normalized = await this._normalizePromptImages(images);
+        const text = normalized.hints.length > 0 ? `${first.text}\n\n${normalized.hints.join("\n")}` : first.text;
+        message.content = [
+            { type: "text", text },
+            ...rest.filter((block) => block.type !== "image"),
+            ...normalized.images,
+        ];
     }
     /**
      * Throw an error if the text is an extension command.
@@ -2518,14 +2612,11 @@ export class AgentSession {
     async _cycleScopedModel(direction, options) {
         const availableIds = new Set(this._modelRuntime.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`));
         const scopedModels = this._scopedModels.filter((scoped) => availableIds.has(`${scoped.model.provider}\0${scoped.model.id}`));
-        if (scopedModels.length <= 1)
-            return undefined;
         const currentModel = this.model;
-        let currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
-        if (currentIndex === -1)
-            currentIndex = 0;
-        const len = scopedModels.length;
-        const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+        const currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
+        const nextIndex = getNextCycleIndex(currentIndex, scopedModels.length, direction);
+        if (nextIndex === undefined)
+            return undefined;
         const next = scopedModels[nextIndex];
         const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
         // Apply model
@@ -2546,14 +2637,11 @@ export class AgentSession {
     }
     async _cycleAvailableModel(direction, options) {
         const availableModels = this._modelRuntime.getAvailableSnapshot();
-        if (availableModels.length <= 1)
-            return undefined;
         const currentModel = this.model;
-        let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
-        if (currentIndex === -1)
-            currentIndex = 0;
-        const len = availableModels.length;
-        const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+        const currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
+        const nextIndex = getNextCycleIndex(currentIndex, availableModels.length, direction);
+        if (nextIndex === undefined)
+            return undefined;
         const nextModel = availableModels[nextIndex];
         const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
         this.agent.state.model = nextModel;
@@ -3486,6 +3574,12 @@ export class AgentSession {
         });
     }
     async _idleBody_reload(options) {
+        if (this.isStreaming) {
+            throw new Error("Wait for the current response to finish before reloading.");
+        }
+        if (this.isCompacting) {
+            throw new Error("Wait for compaction to finish before reloading.");
+        }
         this._hostGeneration = (this._hostGeneration ?? 0) + 1;
         const oldRunner = this._extensionRunner;
         const previousFlagValues = oldRunner.getFlagValues();
@@ -3750,7 +3844,7 @@ export class AgentSession {
      * @returns Result with editorText (if user message) and cancelled status
      */
     async _idleBody_navigateTree(targetId, options = {}) {
-        if (this.isStreaming) {
+        if (this.isStreaming || this._promptPreflightCount > 0) {
             throw new Error("Wait for the current response to finish before navigating the session tree.");
         }
         if (this.isCompacting) {
@@ -3786,7 +3880,8 @@ export class AgentSession {
             label,
         };
         // Set up abort controller for summarization
-        this._branchSummaryAbortController = new AbortController();
+        const abortController = new AbortController();
+        this._branchSummaryAbortController = abortController;
         try {
             let extensionSummary;
             let fromExtension = false;
@@ -3795,7 +3890,7 @@ export class AgentSession {
                 const result = (await this._extensionRunner.emit({
                     type: "session_before_tree",
                     preparation,
-                    signal: this._branchSummaryAbortController.signal,
+                    signal: abortController.signal,
                 }));
                 if (result?.cancel) {
                     return { cancelled: true };
@@ -3820,7 +3915,7 @@ export class AgentSession {
             let summaryDetails;
             let summaryUsage;
             if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
-                const signal = this._branchSummaryAbortController.signal;
+                const signal = abortController.signal;
                 const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
                 const result = await generateBranchSummary(entriesToSummarize, {
                     ...(await this._getSummarizationRequestAuth(this.model, signal)),
@@ -3896,7 +3991,8 @@ export class AgentSession {
             // Update finalized context from the canonical session projection.
             this._refreshFinalizedContext();
             this._restoreToolsFromTranscript();
-            // Emit session_tree event
+            // The selected context is installed; session_tree handlers may now prompt or navigate again.
+            this._branchSummaryAbortController = undefined;
             await this._extensionRunner.emit({
                 type: "session_tree",
                 newLeafId: this.sessionManager.getLeafId(),
@@ -3908,7 +4004,10 @@ export class AgentSession {
             return { editorText, cancelled: false, summaryEntry };
         }
         finally {
-            this._branchSummaryAbortController = undefined;
+            // A navigation started from session_tree owns the controller now; do not clear it.
+            if (this._branchSummaryAbortController === abortController) {
+                this._branchSummaryAbortController = undefined;
+            }
             this._resolveIdleWaitIfIdle();
         }
     }

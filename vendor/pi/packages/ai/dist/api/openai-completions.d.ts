@@ -11,8 +11,9 @@ export interface OpenAICompletionsOptions extends StreamOptions {
 export interface ConvertCompletionsMessagesOptions {
     grammarToolInputProperties?: ReadonlyMap<string, string>;
 }
-type ResolvedOpenAICompletionsCompat = Omit<Required<OpenAICompletionsCompat>, "cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField" | "supportsMidConvoSystemMessages" | "supportsMidConvoToolAdditions" | "vllmPriority" | "videoPartFormat"> & {
+type ResolvedOpenAICompletionsCompat = Omit<Required<OpenAICompletionsCompat>, "cacheControlFormat" | "supportsThinkingTokenBudget" | "promptCacheKeyMode" | "thinkingTokenBudgetField" | "supportsMidConvoSystemMessages" | "supportsMidConvoToolAdditions" | "vllmPriority" | "videoPartFormat"> & {
     cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
+    promptCacheKeyMode?: OpenAICompletionsCompat["promptCacheKeyMode"];
     supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
     thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
     supportsMidConvoSystemMessages?: OpenAICompletionsCompat["supportsMidConvoSystemMessages"];

@@ -12,6 +12,7 @@ export * from "./lan";
 export * from "./local-pi-sync";
 export * from "./marquee-motion";
 export * from "./mcp";
+export * from "./model-generation";
 export * from "./model-visibility";
 export * from "./packages";
 export * from "./preview-excerpt";

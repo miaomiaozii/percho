@@ -1,13 +1,15 @@
 /**
  * TUI config selector for `pi config` command
  */
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../core/keybindings.js";
 import { ConfigSelectorComponent } from "../modes/interactive/components/config-selector.js";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.js";
 /** Show TUI config selector and return when closed */
 export async function selectConfig(options) {
     // Initialize theme before showing TUI
     initTheme(options.settingsManager.getTheme(), true);
+    setKeybindings(KeybindingsManager.create(options.agentDir));
     return new Promise((resolve) => {
         const ui = new TuiMainScreen(new ProcessTerminal(), options.settingsManager.getShowHardwareCursor(), options.agentDir);
         ui.setClearOnShrink(options.settingsManager.getClearOnShrink());

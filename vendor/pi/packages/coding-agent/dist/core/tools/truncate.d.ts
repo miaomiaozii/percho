@@ -67,18 +67,8 @@ export declare function truncateLine(line: string, maxChars?: number): {
     text: string;
     wasTruncated: boolean;
 };
-export interface MiddleTruncationResult {
-    /** The start and end of the content with a `…N chars truncated…` marker between them. */
-    content: string;
-    truncated: boolean;
-    /** Characters left out. */
-    removedChars: number;
-    totalBytes: number;
-    totalLines: number;
-}
-/**
- * Keep the start and the end of `content`, half of `maxBytes` each, and replace the middle with a
- * `…N chars truncated…` marker, like Codex does for tool output. Cuts only at character boundaries.
- */
-export declare function truncateMiddle(content: string, maxBytes: number): MiddleTruncationResult;
+/** Returns at most the first `maxUnits` UTF-16 code units of `text`, without splitting a surrogate pair. */
+export declare function sliceHead(text: string, maxUnits: number): string;
+/** Returns at most the last `maxUnits` UTF-16 code units of `text`, without splitting a surrogate pair. */
+export declare function sliceTail(text: string, maxUnits: number): string;
 //# sourceMappingURL=truncate.d.ts.map

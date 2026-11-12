@@ -10,6 +10,8 @@ export interface McpCommandOptions {
     agentDir: string;
     /** Defaults to `mcp-auth.json` in the agent directory. */
     credentials?: McpOAuthCredentialStore;
+    /** Token of a pi provider, for servers with `auth.provider`. Defaults to the agent directory's `auth.json`. */
+    providerToken?: (provider: string) => Promise<string | undefined>;
     /** Defaults to the platform browser. */
     openUrl?: (url: string) => void;
     /** Defaults to console output. */

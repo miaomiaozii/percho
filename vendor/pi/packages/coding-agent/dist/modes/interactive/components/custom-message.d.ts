@@ -1,5 +1,5 @@
 import { Container, type MarkdownTheme } from "@earendil-works/pi-tui";
-import type { MessageRenderer } from "../../../core/extensions/types.ts";
+import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 /**
  * Component that renders a custom message entry from extensions.
@@ -13,7 +13,10 @@ export declare class CustomMessageComponent extends Container {
     private markdownTheme;
     private _expanded;
     private outputPad;
-    constructor(message: CustomMessage<unknown>, customRenderer?: MessageRenderer, markdownTheme?: MarkdownTheme, outputPad?: number);
+    private markdownTransformers;
+    private messageId?;
+    private timestamp?;
+    constructor(message: CustomMessage<unknown>, customRenderer?: MessageRenderer, markdownTheme?: MarkdownTheme, outputPad?: number, markdownTransformers?: readonly MarkdownTransformer[], messageId?: string, timestamp?: string);
     setExpanded(expanded: boolean): void;
     setOutputPad(outputPad: number): void;
     invalidate(): void;

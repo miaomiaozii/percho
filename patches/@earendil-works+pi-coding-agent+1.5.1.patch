@@ -1,0 +1,1905 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+index 8b6a584..dc10b8e 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+@@ -55,6 +55,9 @@ export type AgentSessionEvent = WithParentToolCallId<Exclude<AgentEvent, {
+ } | {
+     type: "agent_settled";
+     aborted: boolean;
++} | {
++    type: "compaction_pause";
++    pause: CompactionPause | null;
+ } | {
+     type: "queue_update";
+     steering: readonly string[];
+@@ -219,7 +222,30 @@ export interface SessionStats {
+     cost: number;
+     contextUsage?: ContextUsage;
+ }
++/** Percho optional request policy. No host control is active until explicitly installed. */
++export interface CompactionPause {
++    reason: "failed" | "still-over-threshold" | "nothing-to-compact" | "context-changed";
++    errorMessage?: string;
++    tokens?: number;
++    contextWindow?: number;
++    thresholdTokens?: number;
++}
++export interface CompactionRequestPolicy {
++    enabled(): boolean;
++    evaluate(input: { tokens: number; contextWindow: number; settings: { enabled: boolean; reserveTokens: number; keepRecentTokens: number } }): { trigger: boolean; thresholdTokens: number };
++    normalizeMessage?(message: AgentMessage): AgentMessage;
++    describeError?(error: unknown): string;
++    onResult(result: Omit<CompactionPause, "reason"> & { status: CompactionPause["reason"] | "success" | "cancelled" }): CompactionPause | null;
++    retry: { enabled: boolean; maxRetries: number; baseDelayMs: number; maxAgentDelayMs?: number };
++}
++export interface SessionIdleLease {
++    appendCustomEntry<T = unknown>(customType: string, data?: T): string;
++    release(): void;
++}
+ export declare class AgentSession {
++    tryAcquireIdleLease(): SessionIdleLease | undefined;
++    setCompactionPolicy(policy: CompactionRequestPolicy | undefined): void;
++    readonly compactionPause: CompactionPause | null;
+     readonly agent: Agent;
+     readonly sessionManager: SessionManager;
+     readonly settingsManager: SettingsManager;
+@@ -568,6 +594,10 @@ export declare class AgentSession {
+      * @throws Error if no model selected or no API key available (when not streaming)
+      */
+     prompt(text: string, options?: PromptOptions): Promise<void>;
++    /** Percho patch: retry the terminal failure using durable context omission, without user input. */
++    retryLastFailedTurn(ref: { timestamp: number; entryId: string }, options?: {
++        preflightResult?: (disposition: "started") => void;
++    }): Promise<void>;
+     /**
+      * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+      * Returns the run trigger, or undefined when the prompt was handled or queued.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+index d67feeb..6966d57 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+@@ -25,7 +25,7 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.js";
+ import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
+ import { executeBashWithOperations } from "./bash-executor.js";
+ import { generateBugReportSummary } from "./bug-report.js";
+-import { calculateContextTokens, collectEntriesForBranchSummary, compact, estimateContextTokens, estimateProjectedContextTokens, estimateTokens, generateBranchSummary, prepareCompaction, shouldCompact, } from "./compaction/index.js";
++import { calculateContextTokens, collectEntriesForBranchSummary, compact, estimateProjectedContextTokens, estimateTokens, generateBranchSummary, prepareCompaction, shouldCompact, } from "./compaction/index.js";
+ import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.js";
+ import { exportSessionToHtml } from "./export-html/index.js";
+ import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
+@@ -112,6 +112,9 @@ export class AgentSession {
+     _unsubscribeAgent;
+     _eventListeners = [];
+     _isAgentRunActive = false;
++    _idleLease;
++    _idleOperationCount = 0;
++    _idleDisposed = false;
+     _promptPreflightCount = 0;
+     _agentRunAbortRequested = false;
+     _idleWaitPromise;
+@@ -240,6 +243,318 @@ export class AgentSession {
+         if (this._usesDefaultTools)
+             this._restoreToolsFromTranscript(this._defaultToolModifiers);
+     }
++    _assertIdleOperationAllowed() {
++        if (this._idleDisposed) throw new Error("Session is disposed");
++        if (this._idleLease) throw new Error("Session idle lease is held");
++    }
++    _beginIdleOperation() {
++        this._assertIdleOperationAllowed();
++        this._idleOperationCount++;
++        let ended = false;
++        return () => { if (!ended) { ended = true; this._idleOperationCount--; } };
++    }
++    _idleSync(fn) {
++        const end = this._beginIdleOperation();
++        try { return fn(); } finally { end(); }
++    }
++    async _idleAsync(fn) {
++        const end = this._beginIdleOperation();
++        try { return await fn(); } finally { end(); }
++    }
++    async _idleCleanup(fn) {
++        // Cleanup may run under a lease or after disposal, but owns responsibility until settled.
++        this._idleOperationCount++;
++        try { return await fn(); } finally { this._idleOperationCount--; }
++    }
++    _appendCustomEntry(customType, data, options) {
++        const id = this.sessionManager.appendCustomEntry(customType, data, options);
++        const entry = this.sessionManager.getEntry(id);
++        if (entry) this._emit({ type: "entry_appended", entry });
++        return id;
++    }
++    tryAcquireIdleLease() {
++        // A scheduled or in-flight warmer can write later, even if its status reports inactive.
++        if (this._idleDisposed || this._idleLease || this._idleOperationCount || !this.isIdle || this.isCompacting
++            || this._isBeforeSettle || this._isEmittingAgentSettled || this._pendingNextTurnMessages.length
++            || this._pendingCustomMessages.length || this._pendingBashMessages.length || this._deferredSettledActions.length
++            || this.agent.hasQueuedMessages() || this._bashAbortControllers.size || this._retryAbortController
++            || this._branchSummaryAbortController || this._hostPause || this._hostAwaitingUser
++            || this._cacheWarmer?.hasPendingWork) return undefined;
++        const lease = {
++            appendCustomEntry: (customType, data) => {
++                if (this._idleDisposed || this._idleLease !== lease) throw new Error("Session idle lease is no longer active");
++                if (!this.sessionManager.getSessionFile() || !this.sessionManager.getEntries().some((entry) =>
++                    entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))) {
++                    throw new Error("Idle maintenance requires persisted conversation history");
++                }
++                this._idleOperationCount++;
++                try { return this._appendCustomEntry(customType, data, { requireExisting: true }); }
++                finally { this._idleOperationCount--; }
++            },
++            release: () => { if (this._idleLease === lease) this._idleLease = undefined; },
++        };
++        this._idleLease = lease;
++        return lease;
++    }
++    async prompt(...args) { return this._idleAsync(() => this._idleBody_prompt(...args)); }
++    async sendUserMessage(...args) { return this._idleAsync(() => this._idleBody_sendUserMessage(...args)); }
++    async sendCustomMessage(...args) { return this._idleAsync(() => this._idleBody_sendCustomMessage(...args)); }
++    async steer(...args) { return this._idleAsync(() => this._idleBody_steer(...args)); }
++    async followUp(...args) { return this._idleAsync(() => this._idleBody_followUp(...args)); }
++    async retryLastFailedTurn(...args) { return this._idleAsync(() => this._idleBody_retryLastFailedTurn(...args)); }
++    async compact(...args) { return this._idleAsync(() => this._idleBody_compact(...args)); }
++    async bindExtensions(...args) { return this._idleAsync(() => this._idleBody_bindExtensions(...args)); }
++    async extendResourcesFromExtensions(...args) { return this._idleAsync(() => this._idleBody_extendResourcesFromExtensions(...args)); }
++    async reload(...args) { return this._idleAsync(() => this._idleBody_reload(...args)); }
++    async executeBash(...args) { return this._idleAsync(() => this._idleBody_executeBash(...args)); }
++    async navigateTree(...args) { return this._idleAsync(() => this._idleBody_navigateTree(...args)); }
++    async setModel(...args) { return this._idleAsync(() => this._idleBody_setModel(...args)); }
++    async cycleModel(...args) { return this._idleAsync(() => this._idleBody_cycleModel(...args)); }
++    async _executeNestedToolCall(...args) { return this._idleAsync(() => this._idleBody_executeNestedToolCall(...args)); }
++    async summarizeForBugReport(...args) { return this._idleAsync(() => this._idleBody_summarizeForBugReport(...args)); }
++    async _emitAgentSettled(...args) {
++        return this._idleCleanup(() => this._idleBody_emitAgentSettled(...args));
++    }
++    setCompactionPolicy(...args) { return this._idleSync(() => this._idleBody_setCompactionPolicy(...args)); }
++    refreshContext(...args) { return this._idleSync(() => this._idleBody_refreshContext(...args)); }
++    setCacheWarmingMode(...args) { return this._idleSync(() => this._idleBody_setCacheWarmingMode(...args)); }
++    setActiveToolsByName(...args) { return this._idleSync(() => this._idleBody_setActiveToolsByName(...args)); }
++    setScopedModels(...args) { return this._idleSync(() => this._idleBody_setScopedModels(...args)); }
++    clearQueue(...args) { return this._idleSync(() => this._idleBody_clearQueue(...args)); }
++    setThinkingLevel(...args) { return this._idleSync(() => this._idleBody_setThinkingLevel(...args)); }
++    cycleThinkingLevel(...args) { return this._idleSync(() => this._idleBody_cycleThinkingLevel(...args)); }
++    syncQueueModesFromSettings(...args) { return this._idleSync(() => this._idleBody_syncQueueModesFromSettings(...args)); }
++    setSteeringMode(...args) { return this._idleSync(() => this._idleBody_setSteeringMode(...args)); }
++    setFollowUpMode(...args) { return this._idleSync(() => this._idleBody_setFollowUpMode(...args)); }
++    setAutoCompactionEnabled(...args) { return this._idleSync(() => this._idleBody_setAutoCompactionEnabled(...args)); }
++    setAutoRetryEnabled(...args) { return this._idleSync(() => this._idleBody_setAutoRetryEnabled(...args)); }
++    recordBashResult(...args) { return this._idleSync(() => this._idleBody_recordBashResult(...args)); }
++    setSessionName(...args) { return this._idleSync(() => this._idleBody_setSessionName(...args)); }
++    /** Percho: optional host policy; the SDK remains the sole queue/lifecycle owner. */
++    _idleBody_setCompactionPolicy(policy) {
++        this._hostPolicy = policy;
++        this._hostGeneration = (this._hostGeneration ?? 0) + 1;
++        this.agent.preparePendingRequest = policy ? (request, signal) => this._prepareHostPending(request, signal) : undefined;
++        this.agent.onPendingCommitted = policy ? (messages) => {
++            if (messages.some((m) => m.role === "user")) this._overflowRecoveryAttempted = false;
++            this._hostRequestPending = [];
++            // Keep the dispatch route for usage display until its first reply or the next request.
++            this._hostPendingBaseline = undefined;
++            this._emitQueueUpdate();
++        } : undefined;
++        this.agent.onPendingRetained = policy ? () => this._emitQueueUpdate() : undefined;
++        this.agent.validatePendingMessages = policy ? (messages) => this._validateHostDispatch(messages) : undefined;
++    }
++    get compactionPause() { return this._hostPause ?? null; }
++    _hostEnabled() {
++        return !!this._hostPolicy?.enabled() && this.settingsManager.getCompactionEnabled();
++    }
++    _setHostPause(pause) {
++        this._hostPause = pause;
++        if (pause) this._hostResumeBatch = false;
++        this._emit({ type: "compaction_pause", pause });
++    }
++    _notifyHostResult(result) {
++        const pause = this._hostPolicy.onResult(result);
++        if (pause) this._setHostPause(pause);
++    }
++    _omitHostPending(messages) {
++        if (messages.length === 0) return;
++        const visible = new Set(this.sessionManager.buildSessionProjection().entries
++            .filter((entry) => entry.messages.length > 0).map((entry) => entry.sourceEntry.id));
++        for (const raw of messages) {
++            const published = this.agent.getPublishedPendingMessage(raw);
++            const entryId = published && this._entryIdsByMessage.get(published);
++            if (entryId && visible.delete(entryId) && published.role !== "system") {
++                const editId = this.sessionManager.appendContextEdit(entryId, null);
++                this._emit({ type: "entry_appended", entry: this.sessionManager.getEntry(editId) });
++            }
++        }
++    }
++    _validateHostDispatch(messages) {
++        const cancelled = messages.filter((raw) => this.agent.isPendingMessageCancelled(raw));
++        this._omitHostPending(cancelled);
++        const snapshot = this._hostDispatchSnapshot;
++        if (this._agentRunAbortRequested || this.agent.signal?.aborted || this._hostDisposed) return false;
++        if (cancelled.length > 0 || (this._hostEnabled() && snapshot && (snapshot.leaf !== this.sessionManager.getLeafId()
++            || snapshot.model !== this.model || snapshot.generation !== this._hostGeneration))) {
++            if (this._hostEnabled()) this._notifyHostResult({ status: "context-changed" });
++            return false;
++        }
++        return true;
++    }
++    _reconcileHostPending(raw) {
++        const projection = this.sessionManager.buildSessionProjection();
++        const ids = new Set(projection.entries.map((entry) => entry.sourceEntry.id));
++        // Published on another branch (or behind a compaction) is not delivered here.
++        // Explicit context omissions retain their source entry, so they are not resurrected.
++        for (const rawMessage of raw) {
++            const published = this.agent.getPublishedPendingMessage(rawMessage);
++            const entryId = published && this._entryIdsByMessage.get(published);
++            if (entryId && !ids.has(entryId)) this.agent.forgetPublishedPendingMessage(rawMessage);
++        }
++    }
++    _hostPendingContextIsCurrent(signal) {
++        const baseline = this._hostPendingBaseline;
++        if (!baseline || signal?.aborted || this._agentRunAbortRequested || this._hostDisposed) return false;
++        const branchIds = new Set(this.sessionManager.getBranch().map((entry) => entry.id));
++        const ids = new Set(this.sessionManager.buildSessionProjection().entries.map((entry) => entry.sourceEntry.id));
++        const missing = (this._hostRequestPending ?? []).some((raw) => {
++            if (this.agent.isPendingMessageCancelled(raw)) return false;
++            const published = this.agent.getPublishedPendingMessage(raw);
++            const entryId = published && this._entryIdsByMessage.get(published);
++            return entryId && !ids.has(entryId);
++        });
++        if (baseline.model !== this.model || baseline.generation !== this._hostGeneration
++            || (baseline.leaf && !branchIds.has(baseline.leaf)) || missing) {
++            this._notifyHostResult({ status: "context-changed" });
++            return false;
++        }
++        return true;
++    }
++    _hostCandidates(raw, effectiveModel = this._limitsModel()) {
++        const branch = this.sessionManager.getBranch();
++        const projection = this.sessionManager.buildSessionProjection();
++        const ids = new Set(projection.entries.map((entry) => entry.sourceEntry.id));
++        const messages = raw.map((message) => this.agent.getPublishedPendingMessage(message)
++            ?? this._hostPolicy?.normalizeMessage?.(message) ?? message);
++        const extra = messages.filter((message) => !ids.has(this._entryIdsByMessage.get(message)));
++        const estimate = estimateProjectedContextTokens(projection, branch, effectiveModel);
++        return { projection, messages, tokens: estimate.tokens + extra.reduce((n, m) => n + estimateTokens(m), 0) };
++    }
++    _hostUsageRoute() {
++        const routed = this._hostRequestRoute;
++        const baseline = routed?.baseline;
++        return routed && baseline && routed.selection === this.model && baseline.model === this.model
++            && baseline.generation === this._hostGeneration
++            && baseline.leaf === this.sessionManager.getLeafId() ? routed : undefined;
++    }
++    _hostSnapshot() {
++        return { leaf: this.sessionManager.getLeafId(), model: this.model, generation: this._hostGeneration };
++    }
++    _hostSnapshotIsCurrent(snapshot, signal) {
++        if (signal?.aborted || this._agentRunAbortRequested || this._hostDisposed) return false;
++        if (snapshot.leaf !== this.sessionManager.getLeafId() || snapshot.model !== this.model
++            || snapshot.generation !== this._hostGeneration) {
++            this._notifyHostResult({ status: "context-changed" });
++            return false;
++        }
++        return true;
++    }
++    async _prepareHostRoute(raw, signal) {
++        const selection = this.model;
++        if (!selection || !isVirtualModel(selection)) return;
++        const baseline = this._hostSnapshot();
++        const candidate = this._hostCandidates(raw);
++        const ids = new Set(candidate.projection.entries.map((entry) => entry.sourceEntry.id));
++        const messages = [...candidate.projection.messages, ...candidate.messages.filter((message) =>
++            !ids.has(this._entryIdsByMessage.get(message)))];
++        const lastResponse = messages.findLastIndex((message) => message.role === "assistant");
++        const userTurn = messages.slice(lastResponse + 1).some((message) => message.role === "user");
++        const failed = this._failedResponse;
++        const state = getVirtualModelState(this.sessionManager.getBranch(), selection.provider, selection.id);
++        const route = await this._modelRuntime.resolveModel(selection, convertToLlm(messages), {
++            reason: failed ? "retry" : userTurn ? "user" : "continuation",
++            thinkingLevel: this.thinkingLevel, signal, failed, state,
++        });
++        if (!this._hostSnapshotIsCurrent(baseline, signal)) return;
++        if (route.state !== undefined && route.state !== state) {
++            const data = { provider: selection.provider, modelId: selection.id, state: route.state };
++            const entry = this.sessionManager.getEntry(this.sessionManager.appendCustomEntry(VIRTUAL_MODEL_STATE_ENTRY, data));
++            if (entry) {
++                baseline.leaf = entry.id;
++                this._emit({ type: "entry_appended", entry });
++            }
++        }
++        if (!this._hostSnapshotIsCurrent(baseline, signal)) return;
++        this._hostRequestRoute = { selection, route, baseline: this._hostSnapshot() };
++    }
++    async _prepareHostPending(request, signal) {
++        let raw = this.agent.orderPendingMessages([
++            ...request.pendingMessages,
++            ...(this._hostResumeBatch ? this.agent.getQueuedMessages() : []),
++        ]);
++        this._hostRequestPending = raw;
++        if (this._hostDisposed || ((this._hostPause || this._hostAwaitingUser) && !this._hostResumeBatch)) return { action: "end", pendingMessages: raw };
++        if (this._hostResumeBatch) this._hostAwaitingUser = false;
++        if (this._hostPause && this._hostResumeBatch) this._setHostPause(null);
++        this._reconcileHostPending(raw);
++        // Normalize queued images before policy estimation or publication; candidates may be copied.
++        const normalizeQueuedImages = async (messages) => {
++            for (const message of messages) {
++                if (this._queuedMessagesWithImages.has(message)) {
++                    this._queuedMessagesWithImages.delete(message);
++                    await this._normalizeQueuedMessageImages(message);
++                }
++            }
++        };
++        await normalizeQueuedImages(raw);
++        this._hostRequestRoute = undefined;
++        this._hostRequestRouteError = undefined;
++        this._hostDispatchSnapshot = undefined;
++        if (this._hostEnabled()) {
++            const baseline = this._hostSnapshot();
++            try {
++                await this._prepareHostRoute(raw, signal);
++            }
++            catch (error) {
++                if (this._hostSnapshotIsCurrent(baseline, signal)) this._hostRequestRouteError = { error };
++            }
++            if (this._hostPause || signal?.aborted || this._agentRunAbortRequested || this._hostDisposed)
++                return { action: "end", pendingMessages: raw };
++            const effectiveModel = this._hostRequestRoute?.route.model ?? this.model;
++            if (!this._hostRequestRouteError) await this._checkHostRequest(raw, signal, true, effectiveModel);
++            // Include inputs accepted during a resumed summary before taking the dispatch snapshot.
++            if (this._hostResumeBatch && !this._hostPause) {
++                raw = this.agent.orderPendingMessages([...raw, ...this.agent.getQueuedMessages()]);
++                this._hostRequestPending = raw;
++                await normalizeQueuedImages(raw);
++                if (!this._hostRequestRouteError) await this._checkHostRequest(raw, signal, false, effectiveModel);
++            }
++        }
++        const candidate = this._hostCandidates(raw);
++        this._hostPendingBaseline = this._hostSnapshot();
++        if (this._hostRequestRoute && !this._hostPause
++            && this._hostRequestRoute.baseline.generation === this._hostGeneration)
++            this._hostRequestRoute.baseline = this._hostPendingBaseline;
++        return { pendingMessages: raw, messages: candidate.messages,
++            context: { ...request.context, messages: candidate.projection.messages },
++            model: this.model, thinkingLevel: this.thinkingLevel,
++            ...((this._hostPause || signal?.aborted || this._agentRunAbortRequested) ? { action: "end" } : {}) };
++    }
++    async _checkHostRequest(raw, signal, allowCompaction, effectiveModel = this.model) {
++        if (!this._hostEnabled() || signal?.aborted || this._agentRunAbortRequested) return;
++        const inspect = () => {
++            const candidate = this._hostCandidates(raw, effectiveModel);
++            const settings = this.settingsManager.getCompactionSettings(effectiveModel);
++            const input = { tokens: candidate.tokens, contextWindow: effectiveModel?.contextWindow ?? 0, settings };
++            return { ...input, ...this._hostPolicy.evaluate(input) };
++        };
++        let check = inspect();
++        if (!check.trigger) return;
++        if (allowCompaction && !this._hostCompactedForRequest) {
++            this._hostCompactedForRequest = true;
++            await this._runAutoCompaction("threshold", false, effectiveModel);
++            if (signal?.aborted || this._agentRunAbortRequested || this._hostPause || !this._hostEnabled()) return;
++            check = inspect();
++        }
++        if (check.trigger) this._notifyHostResult({ status: "still-over-threshold", tokens: check.tokens,
++            contextWindow: check.contextWindow, thresholdTokens: check.thresholdTokens });
++    }
++    _hostProtectedRecentTokens() {
++        const pending = this._hostRequestPending ?? [];
++        const ids = new Set(pending.flatMap((raw) => {
++            const published = this.agent.getPublishedPendingMessage(raw);
++            const id = published && this._entryIdsByMessage.get(published);
++            return id ? [id] : [];
++        }));
++        const branch = this.sessionManager.getBranch();
++        const first = branch.findIndex((entry) => ids.has(entry.id));
++        if (first < 0) return 0;
++        return 1 + branch.slice(first).reduce((sum, entry) =>
++            sum + (entry.type === "message" ? estimateTokens(entry.message) : 0), 0);
++    }
++
+     get modelRuntime() {
+         return this._modelRuntime;
+     }
+@@ -439,7 +754,7 @@ export class AgentSession {
+      * Run a call that the tool call `parentToolCallId` made through `ctx.executeTool()`. It goes
+      * through the agent's tool pipeline with the session's hooks, against the callable tools.
+      */
+-    async _executeNestedToolCall(parentToolCallId, name, args, options) {
++    async _idleBody_executeNestedToolCall(parentToolCallId, name, args, options) {
+         this._nestedToolCalls ??= new NestedToolCallRunner({
+             getTools: () => this._getCallableTools(),
+             isSequential: () => this.agent.toolExecution === "sequential",
+@@ -473,13 +788,13 @@ export class AgentSession {
+     _exceedsCompactionThreshold(model, projection) {
+         if (model.contextWindow <= 0)
+             return false;
+-        return shouldCompact(estimateProjectedContextTokens(projection, this.sessionManager.getBranch()).tokens, model.contextWindow, this.settingsManager.getCompactionSettings(this.model));
++        return shouldCompact(estimateProjectedContextTokens(projection, this.sessionManager.getBranch(), model).tokens, model.contextWindow, this.settingsManager.getCompactionSettings(model));
+     }
+     async _compactBeforeNextAssistantResponse(context) {
+         const projection = this.sessionManager.buildSessionProjection();
+         // A virtual selection is checked in prepareRequest, against the model the request is routed to.
+         const model = this.model;
+-        if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
++        if (this._hostEnabled() || !model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
+             return { ...context, messages: projection.messages };
+         }
+         await this._runAutoCompaction("threshold", false);
+@@ -506,9 +821,38 @@ export class AgentSession {
+                 }, signal);
+                 return { previous, context: previous?.context ?? canonicalContext, projection };
+             };
++            if (this._hostEnabled() && !this._hostPendingContextIsCurrent(signal)) return { action: "end" };
++            const baseline = this._hostEnabled() ? this._hostSnapshot() : undefined;
+             let { previous, context, projection } = await prepare();
+             const model = previous?.model ?? this.agent.state.model;
+             const thinkingLevel = previous?.thinkingLevel ?? this.agent.state.thinkingLevel;
++            if (this._hostPolicy) {
++                if (baseline && !this._hostSnapshotIsCurrent(baseline, signal)) return { action: "end" };
++                // Routing failed before publication. Now the accepted input is durable, so use
++                // the ordinary model error/retry path instead of losing or repeatedly draining it.
++                if (this._hostRequestRouteError) {
++                    const { error } = this._hostRequestRouteError;
++                    this._hostRequestRouteError = undefined;
++                    this._hostResumeBatch = false;
++                    this._hostCompactedForRequest = false;
++                    this._hostDispatchSnapshot = this._hostSnapshot();
++                    throw error;
++                }
++                const routed = this._hostRequestRoute;
++                if (this._hostEnabled() && ((routed && routed.selection !== model)
++                    || (isVirtualModel(model) && !routed))) {
++                    this._notifyHostResult({ status: "context-changed" });
++                    return { action: "end" };
++                }
++                if (routed) routed.baseline = this._hostSnapshot();
++                await this._checkHostRequest(this._hostRequestPending ?? [], signal, false, routed?.route.model ?? model);
++                if (this._hostPause || signal?.aborted || this._agentRunAbortRequested || this._hostDisposed) return { action: "end" };
++                this._hostCompactedForRequest = false;
++                this._hostResumeBatch = false;
++                this._hostDispatchSnapshot = this._hostSnapshot();
++                if (routed && this._hostEnabled())
++                    return { ...previous, context, model: routed.route.model, thinkingLevel: routed.route.thinkingLevel };
++            }
+             if (!isVirtualModel(model))
+                 return { ...previous, context, model, thinkingLevel };
+             // The selection stays in agent state; only this request uses the routed model. A routing
+@@ -533,7 +877,7 @@ export class AgentSession {
+             // The route stands: the router already decided this request. The state entry does not change
+             // the projection.
+             if (this._exceedsCompactionThreshold(route.model, projection)) {
+-                await this._runAutoCompaction("threshold", false);
++                await this._runAutoCompaction("threshold", false, route.model);
+                 ({ previous, context } = await prepare());
+             }
+             return { ...previous, context, model: route.model, thinkingLevel: route.thinkingLevel };
+@@ -709,8 +1053,8 @@ export class AgentSession {
+     _emitQueueUpdate() {
+         this._emit({
+             type: "queue_update",
+-            steering: [...this._steeringMessages],
+-            followUp: [...this._followUpMessages],
++            steering: [...this.getSteeringMessages()],
++            followUp: [...this.getFollowUpMessages()],
+         });
+     }
+     async _emitSessionCompactFailed(event) {
+@@ -735,13 +1079,14 @@ export class AgentSession {
+         this._resolveIdleWait = undefined;
+         resolve();
+     }
+-    async _emitAgentSettled() {
++    async _idleBody_emitAgentSettled() {
+         this._cacheWarmer?.onAgentSettled();
+         this._isAgentRunActive = false;
+         this._isEmittingAgentSettled = true;
+         try {
+             const aborted = this._agentRunAbortRequested;
+-            await this._extensionRunner.emit({ type: "agent_settled", aborted });
++            // Disposed extensions must not restart work; the host still receives settlement.
++            if (!this._idleDisposed) await this._extensionRunner.emit({ type: "agent_settled", aborted });
+             this._emit({ type: "agent_settled", aborted });
+         }
+         finally {
+@@ -783,7 +1128,7 @@ export class AgentSession {
+         }
+         // When a user message starts, check if it's from either queue and remove it BEFORE emitting
+         // This ensures the UI sees the updated queue state
+-        if (event.type === "message_start" && event.message.role === "user") {
++        if (!this._hostPolicy && event.type === "message_start" && event.message.role === "user") {
+             this._overflowRecoveryAttempted = false;
+             const messageText = contentText(event.message.content, "");
+             // Check steering queue first
+@@ -812,6 +1157,7 @@ export class AgentSession {
+         this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+         // Handle session persistence
+         if (event.type === "message_end") {
++            const usageRoute = this._hostUsageRoute();
+             let entryId;
+             // Check if this is a custom message from extensions
+             if (event.message.role === "custom") {
+@@ -827,6 +1173,11 @@ export class AgentSession {
+             }
+             if (entryId)
+                 this._entryIdsByMessage.set(event.message, entryId);
++            // A failed/zero-usage reply still belongs to the dispatched physical route.
++            if (usageRoute && event.message.role === "assistant"
++                && event.message.provider === usageRoute.route.model.provider
++                && event.message.model === usageRoute.route.model.id)
++                usageRoute.baseline = this._hostSnapshot();
+             // Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
+             if (event.message.role === "assistant") {
+                 const assistantMsg = event.message;
+@@ -856,6 +1207,7 @@ export class AgentSession {
+         }
+     };
+     _willRetryAfterAgentEnd(event) {
++        if (this._hostPause || this._hostAwaitingUser || this._hostDisposed) return false;
+         if (this._agentRunAbortRequested)
+             return false;
+         const settings = this.settingsManager.getRetrySettings();
+@@ -1068,6 +1420,10 @@ export class AgentSession {
+      * Call this when completely done with the session.
+      */
+     dispose() {
++        this._idleDisposed = true;
++        this._idleLease = undefined;
++        this._hostGeneration = (this._hostGeneration ?? 0) + 1;
++        this._hostDisposed = true;
+         try {
+             this.abortRetry();
+             this.abortCompaction();
+@@ -1091,7 +1447,7 @@ export class AgentSession {
+     // Read-only State Access
+     // =========================================================================
+     /** Refresh the public finalized transcript from the canonical session projection. */
+-    refreshContext() {
++    _idleBody_refreshContext() {
+         this._refreshFinalizedContext();
+     }
+     /** Full agent state */
+@@ -1103,7 +1459,7 @@ export class AgentSession {
+         return this._cacheWarmer?.status;
+     }
+     /** Persist the cache-warming mode and immediately reconcile active warming. */
+-    setCacheWarmingMode(mode) {
++    _idleBody_setCacheWarmingMode(mode) {
+         this.settingsManager.setCacheWarmingMode(mode);
+         this._cacheWarmer?.onModeChanged();
+     }
+@@ -1175,7 +1531,7 @@ export class AgentSession {
+      * Also rebuilds the system prompt to reflect the new tool set.
+      * Changes take effect on the next agent turn.
+      */
+-    setActiveToolsByName(toolNames) {
++    _idleBody_setActiveToolsByName(toolNames) {
+         const previous = this.getActiveToolNames();
+         this._setActiveTools(toolNames);
+         // A loadout that deactivates a tool replaces the restored one, whose pending tools are dropped.
+@@ -1319,7 +1675,7 @@ export class AgentSession {
+         return this._scopedModels;
+     }
+     /** Update scoped models for cycling */
+-    setScopedModels(scopedModels) {
++    _idleBody_setScopedModels(scopedModels) {
+         this._scopedModels = scopedModels;
+     }
+     /** File-based prompt templates */
+@@ -1485,6 +1841,7 @@ export class AgentSession {
+      * @param onStarted Called once the run's messages are prepared, before the first request.
+      */
+     async _startRun(trigger, onStarted) {
++        this._hostCompactedForRequest = false;
+         this._isAgentRunActive = true;
+         this._agentRunAbortRequested = false;
+         let messages;
+@@ -1502,14 +1859,18 @@ export class AgentSession {
+         // have while idle. No run exists yet, so they cannot split a tool call from its result.
+         this._flushPendingBashMessages();
+         this._flushPendingCustomMessages();
+-        onStarted?.();
+-        // Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
+-        this._failedResponse = undefined;
+-        this._recordSelection();
+-        // The run records the loadout in the transcript; restored tools that did not register by now
+-        // are dropped, so a tool that never registers does not stay pending.
+-        this._pendingToolNames.clear();
++        await this._runAgentPrompt(messages, undefined, onStarted);
++    }
++    /** Percho patch: share the complete run lifecycle with manual failure recovery. */
++    async _runAgentPrompt(messages, failedResponse, onStarted) {
++        this._failedResponse = failedResponse;
++        let started = false;
+         try {
++            this._recordSelection();
++            // Keep late tool registration/loadout semantics identical for prompts and recovery.
++            this._pendingToolNames.clear();
++            onStarted?.();
++            started = true;
+             await this.agent.prompt(messages);
+             while (!this._agentRunAbortRequested) {
+                 if (await this._handlePostAgentRun()) {
+@@ -1532,7 +1893,52 @@ export class AgentSession {
+             this._runSystemPromptOptions = undefined;
+             this._flushPendingBashMessages();
+             this._flushPendingCustomMessages();
+-            await this._emitAgentSettled();
++            if (started) {
++                await this._emitAgentSettled();
++            }
++            else {
++                this._isAgentRunActive = false;
++                this._resolveIdleWaitIfIdle();
++            }
++        }
++    }
++    /**
++     * Percho patch: retry the terminal failed response without adding user/custom input or
++     * re-running before_agent_start handlers. Retain the original failure in durable history.
++     */
++    async _idleBody_retryLastFailedTurn(ref, options) {
++        if (this._hostPause || this._hostAwaitingUser) throw new Error("Session paused: send a new message to resume");
++        if (!this.isIdle || this._isEmittingAgentSettled || this._isBeforeSettle || this.agent.hasQueuedMessages()) {
++            throw new Error("Cannot retry while the session is busy or has queued messages");
++        }
++        const terminal = [...this.sessionManager.getBranch()].reverse().find((entry) => entry.type === "message" &&
++            ["user", "assistant", "toolResult"].includes(entry.message.role));
++        const message = terminal?.type === "message" ? terminal.message : undefined;
++        if (!Number.isFinite(ref?.timestamp) || !message || message.role !== "assistant" ||
++            message.stopReason !== "error" || !message.errorMessage ||
++            /was aborted|request aborted/i.test(message.errorMessage) ||
++            message.timestamp !== ref.timestamp || terminal.id !== ref.entryId) {
++            throw new Error("This failed response is no longer the current retry target");
++        }
++        if (!this.model) {
++            throw new Error(formatNoModelSelectedMessage());
++        }
++        this._isAgentRunActive = true;
++        this._agentRunAbortRequested = false;
++        let running = false;
++        try {
++            this._omitRecoveryAttempt(message);
++            this._retryAttempt = 0;
++            this._overflowRecoveryAttempted = false;
++            running = true;
++            await this._runAgentPrompt([], message, () => options?.preflightResult?.("started"));
++        }
++        finally {
++            // The shared run owns cleanup after entry; durable omission can fail before that.
++            if (!running) {
++                this._isAgentRunActive = false;
++                this._resolveIdleWaitIfIdle();
++            }
+         }
+     }
+     /**
+@@ -1545,7 +1951,7 @@ export class AgentSession {
+         // Check if we need to compact before sending (catches aborted responses).
+         // The starting message is sent below, so do not call agent.continue() here.
+         const lastAssistant = this._findLastAssistantMessage();
+-        if (lastAssistant) {
++        if (lastAssistant && !this._hostEnabled()) {
+             await this._checkCompaction(lastAssistant, false);
+         }
+         const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+@@ -1593,6 +1999,7 @@ export class AgentSession {
+         return messages;
+     }
+     async _handlePostAgentRun() {
++        if (this._hostPause || this._hostAwaitingUser || this._hostDisposed) return false;
+         const message = this._lastAssistantMessage;
+         this._lastAssistantMessage = undefined;
+         if (this._agentRunAbortRequested) {
+@@ -1621,13 +2028,15 @@ export class AgentSession {
+             this._retryAttempt = 0;
+         }
+         if (await this._checkCompaction(message)) {
+-            return !this._agentRunAbortRequested;
++            return !this._agentRunAbortRequested && !this._hostPause;
+         }
++        if (this._hostPause || this._hostAwaitingUser || this._hostDisposed) return false;
+         // The low-level loop drains both queues before agent_end. Messages queued by
+         // agent_end handlers require a fresh run before pre-settlement handlers fire.
+         return !this._agentRunAbortRequested && this.agent.hasQueuedMessages();
+     }
+     async _runBeforeSettleBoundary() {
++        if (this._hostPause || this._hostAwaitingUser || this._hostDisposed) return false;
+         if (!this._extensionRunner.hasHandlers("agent_before_settle"))
+             return this.agent.hasQueuedMessages();
+         this._isBeforeSettle = true;
+@@ -1692,7 +2101,7 @@ export class AgentSession {
+      * @throws Error if streaming and no streamingBehavior specified
+      * @throws Error if no model selected or no API key available (when not streaming)
+      */
+-    async prompt(text, options) {
++    async _idleBody_prompt(text, options) {
+         if (this._isEmittingAgentSettled) {
+             this._deferredSettledActions.push(async () => await this.prompt(text, options));
+             return;
+@@ -1745,6 +2154,15 @@ export class AgentSession {
+             expandedText = this._expandSkillCommand(expandedText);
+             expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+         }
++        if (this._hostPolicy && !this.isStreaming && (this._hostPause || this._hostAwaitingUser || this.agent.hasQueuedMessages())) {
++            if ((options?.source ?? "interactive") === "extension") {
++                await this._queueFollowUp(expandedText, currentImages);
++                preflightResult?.("queued");
++                return;
++            }
++            this._hostResumeBatch = true;
++            this._hostCompactedForRequest = false;
++        }
+         // If streaming, queue via steer() or followUp() based on option
+         if (this.isStreaming) {
+             if (!options?.streamingBehavior) {
+@@ -1859,7 +2277,7 @@ export class AgentSession {
+      * @param options Input source; defaults to interactive
+      * @throws Error if text is an extension command
+      */
+-    async steer(text, images, options) {
++    async _idleBody_steer(text, images, options) {
+         return this._queueUserInput(text, images, "steer", options?.source ?? "interactive", options?.videos);
+     }
+     /**
+@@ -1870,15 +2288,14 @@ export class AgentSession {
+      * @param options Input source; defaults to interactive
+      * @throws Error if text is an extension command
+      */
+-    async followUp(text, images, options) {
++    async _idleBody_followUp(text, images, options) {
+         return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive", options?.videos);
+     }
+     /**
+      * Internal: Queue a steering message (already expanded, no extension command check).
+      */
+     async _queueSteer(text, images, videos) {
+-        this._steeringMessages.push(text);
+-        this._emitQueueUpdate();
++        if (!this._hostPolicy) this._steeringMessages.push(text);
+         const content = [{ type: "text", text }];
+         if (images) {
+             content.push(...images);
+@@ -1887,13 +2304,13 @@ export class AgentSession {
+         if (images?.length)
+             this._queuedMessagesWithImages.add(message);
+         this.agent.steer(message);
++        this._emitQueueUpdate();
+     }
+     /**
+      * Internal: Queue a follow-up message (already expanded, no extension command check).
+      */
+     async _queueFollowUp(text, images, videos) {
+-        this._followUpMessages.push(text);
+-        this._emitQueueUpdate();
++        if (!this._hostPolicy) this._followUpMessages.push(text);
+         const content = [{ type: "text", text }];
+         if (images) {
+             content.push(...images);
+@@ -1902,6 +2319,7 @@ export class AgentSession {
+         if (images?.length)
+             this._queuedMessagesWithImages.add(message);
+         this.agent.followUp(message);
++        this._emitQueueUpdate();
+     }
+     /** Replace a queued user message's images in place with normalized ones, appending hints to its text. */
+     async _normalizeQueuedMessageImages(message) {
+@@ -1943,7 +2361,7 @@ export class AgentSession {
+      * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
+      * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
+      */
+-    async sendCustomMessage(message, options) {
++    async _idleBody_sendCustomMessage(message, options) {
+         const appMessage = {
+             role: "custom",
+             customType: message.customType,
+@@ -1953,6 +2371,13 @@ export class AgentSession {
+             details: message.details,
+             timestamp: Date.now(),
+         };
++        if (this._hostPolicy) this.agent.orderPendingMessages([appMessage]);
++        if (this._hostPolicy && (this._hostPause || this._hostAwaitingUser)
++            && options?.triggerTurn && options.deliverAs !== "nextTurn") {
++            this.agent.followUp(appMessage);
++            this._emitQueueUpdate();
++            return;
++        }
+         if (options?.deliverAs === "nextTurn") {
+             this._pendingNextTurnMessages.push(appMessage);
+         }
+@@ -2009,7 +2434,7 @@ export class AgentSession {
+      * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+      * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
+      */
+-    async sendUserMessage(content, options) {
++    async _idleBody_sendUserMessage(content, options) {
+         // Normalize content to text string + optional images
+         let text;
+         let images;
+@@ -2043,26 +2468,28 @@ export class AgentSession {
+      * Useful for restoring to editor when user aborts.
+      * @returns Object with steering and followUp arrays
+      */
+-    clearQueue() {
+-        const steering = [...this._steeringMessages];
+-        const followUp = [...this._followUpMessages];
++    _idleBody_clearQueue() {
++        const steering = [...this.getSteeringMessages()];
++        const followUp = [...this.getFollowUpMessages()];
++        const pending = this._hostPolicy ? this.agent.getQueuedMessages() : [];
+         this._steeringMessages = [];
+         this._followUpMessages = [];
+         this.agent.clearAllQueues();
++        this._omitHostPending(pending);
+         this._emitQueueUpdate();
+         return { steering, followUp };
+     }
+     /** Number of pending messages (includes both steering and follow-up) */
+     get pendingMessageCount() {
+-        return this._steeringMessages.length + this._followUpMessages.length;
++        return this._hostPolicy ? this.agent.getQueuedMessages().length : this._steeringMessages.length + this._followUpMessages.length;
+     }
+     /** Get pending steering messages (read-only) */
+     getSteeringMessages() {
+-        return this._steeringMessages;
++        return this._hostPolicy ? this.agent.getQueuedMessages("steer").filter((m) => m.role === "user").map((m) => contentText(m.content, "")) : this._steeringMessages;
+     }
+     /** Get pending follow-up messages (read-only) */
+     getFollowUpMessages() {
+-        return this._followUpMessages;
++        return this._hostPolicy ? this.agent.getQueuedMessages("followUp").filter((m) => m.role === "user").map((m) => contentText(m.content, "")) : this._followUpMessages;
+     }
+     get resourceLoader() {
+         return this._resourceLoader;
+@@ -2071,6 +2498,15 @@ export class AgentSession {
+      * Abort current operation and wait for agent to become idle.
+      */
+     async abort() {
++        if (this._hostEnabled()) {
++            this._hostAwaitingUser = true;
++            this._hostResumeBatch = false;
++            this._hostCompactedForRequest = false;
++        }
++        await this._abortCurrentOperation();
++    }
++    /** Cancel SDK work without treating internal lifecycle operations as a user stop. */
++    async _abortCurrentOperation() {
+         if (this._isAgentRunActive) {
+             this._agentRunAbortRequested = true;
+         }
+@@ -2107,12 +2543,13 @@ export class AgentSession {
+      * Persists to global defaults only when options.persist is true.
+      * @throws Error if no auth is configured for the model
+      */
+-    async setModel(model, options = {}) {
++    async _idleBody_setModel(model, options = {}) {
+         if (!(await this._modelRuntime.checkAuth(model.provider))) {
+             throw new Error(`No API key for ${model.provider}/${model.id}`);
+         }
+         const previousModel = this.model;
+         const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
++        this._hostGeneration = (this._hostGeneration ?? 0) + 1;
+         this.agent.state.model = model;
+         this.sessionManager.appendModelChange(model.provider, model.id);
+         if (options.persist) {
+@@ -2145,7 +2582,7 @@ export class AgentSession {
+      * @param direction - "forward" (default) or "backward"
+      * @returns The new model info, or undefined if only one model available
+      */
+-    async cycleModel(direction = "forward", options = {}) {
++    async _idleBody_cycleModel(direction = "forward", options = {}) {
+         if (this._scopedModels.length > 0) {
+             return this._cycleScopedModel(direction, options);
+         }
+@@ -2207,7 +2644,7 @@ export class AgentSession {
+      * Saves the clamped level to the session transcript only if the level actually changes.
+      * Persists the requested level to global defaults only when options.persist is true.
+      */
+-    setThinkingLevel(level, options = {}) {
++    _idleBody_setThinkingLevel(level, options = {}) {
+         const availableLevels = this.getAvailableThinkingLevels();
+         const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
+         // Only persist if actually changing
+@@ -2231,7 +2668,7 @@ export class AgentSession {
+      * Cycle to next thinking level.
+      * @returns New level, or undefined if model doesn't support thinking
+      */
+-    cycleThinkingLevel(options = {}) {
++    _idleBody_cycleThinkingLevel(options = {}) {
+         if (!this.supportsThinking())
+             return undefined;
+         const levels = this.getAvailableThinkingLevels();
+@@ -2275,7 +2712,7 @@ export class AgentSession {
+     // =========================================================================
+     // Queue Mode Management
+     // =========================================================================
+-    syncQueueModesFromSettings() {
++    _idleBody_syncQueueModesFromSettings() {
+         this.agent.steeringMode = this.settingsManager.getSteeringMode();
+         this.agent.followUpMode = this.settingsManager.getFollowUpMode();
+     }
+@@ -2283,7 +2720,7 @@ export class AgentSession {
+      * Set steering message mode.
+      * Saves to settings.
+      */
+-    setSteeringMode(mode) {
++    _idleBody_setSteeringMode(mode) {
+         this.agent.steeringMode = mode;
+         this.settingsManager.setSteeringMode(mode);
+     }
+@@ -2291,7 +2728,7 @@ export class AgentSession {
+      * Set follow-up message mode.
+      * Saves to settings.
+      */
+-    setFollowUpMode(mode) {
++    _idleBody_setFollowUpMode(mode) {
+         this.agent.followUpMode = mode;
+         this.settingsManager.setFollowUpMode(mode);
+     }
+@@ -2300,9 +2737,38 @@ export class AgentSession {
+     // =========================================================================
+     /** Generate Pi's built-in compaction summary for manual and automatic compaction. */
+     async _runDefaultCompaction(preparation, model, customInstructions, signal, reason) {
+-        // Resolve the request only when Pi summarizes itself: routing may call models or fail.
+-        const request = await this._getSummarizationRequestAuth(model, signal);
+-        return compact(preparation, request.model, request.apiKey, request.headers, customInstructions, signal, request.thinkingLevel, this.agent.streamFunction, request.env, this.settingsManager.getRetrySettings(), this._summarizationRetryCallbacks({ source: "compaction", reason }), undefined);
++        const host = reason !== "manual" && this._hostEnabled();
++        if (!host) {
++            const request = await this._getSummarizationRequestAuth(model, signal);
++            return compact(preparation, request.model, request.apiKey, request.headers, customInstructions, signal,
++                request.thinkingLevel, this.agent.streamFunction, request.env, this.settingsManager.getRetrySettings(),
++                this._summarizationRetryCallbacks({ source: "compaction", reason }), undefined);
++        }
++        // Each summary's existing retry loop owns preparation and streaming together.
++        // No outer retry: a successful first part is never generated again.
++        const failure = (error, requestModel = model) => ({ role: "assistant", api: requestModel.api,
++            provider: requestModel.provider, model: requestModel.id, content: [], timestamp: Date.now(),
++            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
++                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
++            stopReason: signal?.aborted ? "aborted" : "error",
++            errorMessage: this._hostPolicy.describeError?.(error) ?? String(error) });
++        const stream = async (_model, context, options) => {
++            let request;
++            try {
++                signal?.throwIfAborted();
++                request = await this._getSummarizationRequestAuth(model, signal);
++                signal?.throwIfAborted();
++                const response = await this.agent.streamFunction(request.model, context, {
++                    ...options, apiKey: request.apiKey, headers: request.headers, env: request.env,
++                    reasoning: request.model.reasoning && request.thinkingLevel !== "off" ? request.thinkingLevel : undefined,
++                });
++                return { ...response, result: async () => {
++                    try { return await response.result(); } catch (error) { return failure(error, request.model); }
++                } };
++            } catch (error) { return { result: async () => failure(error, request?.model) }; }
++        };
++        return compact(preparation, model, undefined, undefined, customInstructions, signal, this.thinkingLevel,
++            stream, undefined, this._hostPolicy.retry, this._summarizationRetryCallbacks({ source: "compaction", reason }), undefined);
+     }
+     _clearManualCompactionState() {
+         this._compactionAbortController = undefined;
+@@ -2323,8 +2789,8 @@ export class AgentSession {
+      *
+      * @param customInstructions Optional instructions for the compaction summary
+      */
+-    async compact(customInstructions) {
+-        await this.abort();
++    async _idleBody_compact(customInstructions) {
++        await this._abortCurrentOperation();
+         this._compactionAbortController = new AbortController();
+         this._emit({ type: "compaction_start", reason: "manual" });
+         let fromExtension = false;
+@@ -2536,12 +3002,14 @@ export class AgentSession {
+             // Case 2: the response completed successfully. Compact, but do not retry because
+             // agent.continue() cannot continue from a completed assistant response.
+             if (!willRetry) {
+-                return await this._runAutoCompaction("overflow", false);
++                if (this._hostEnabled()) return false;
++                return await this._runAutoCompaction("overflow", false, messageModel ?? this.model);
+             }
+             if (this._overflowRecoveryAttempted) {
+                 const errorMessage = contextOverflow
+                     ? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+                     : "Truncated response recovery failed after one compact-and-retry attempt.";
++                if (this._hostEnabled()) this._notifyHostResult({ status: "failed", errorMessage });
+                 this._emit({
+                     type: "compaction_end",
+                     reason: "overflow",
+@@ -2562,45 +3030,20 @@ export class AgentSession {
+             // Persistently omit the selected final attempt before post-run recovery compaction.
+             this._overflowRecoveryAttempted = true;
+             this._omitRecoveryAttempt(assistantMessage);
+-            const retry = await this._runAutoCompaction("overflow", willRetry);
++            const retry = await this._runAutoCompaction("overflow", willRetry, messageModel ?? this.model);
+             if (retry)
+                 this._failedResponse = assistantMessage;
+             return retry;
+         }
++        if (this._hostEnabled()) return false;
+         // Case 3: threshold compaction without retry.
+         // For error messages or all-zero usage messages, estimate from the last valid response.
+         // This ensures sessions that hit persistent API errors (e.g. 529) or malformed zero-usage
+         // responses can still compact and do not reset context accounting.
+-        let contextTokens;
+-        const projection = currentProjection;
+-        const hasContextEdits = projection.entries.some((entry) => entry.sourceEntry.type === "context_edit");
+-        const directContextTokens = assistantMessage.usage ? calculateContextTokens(assistantMessage.usage) : 0;
+-        if (hasContextEdits) {
+-            contextTokens = estimateProjectedContextTokens(projection, branch).tokens;
+-        }
+-        else if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
+-            const messages = this.agent.state.messages;
+-            const estimate = estimateContextTokens(messages);
+-            // Without provider usage, estimate.tokens is the pure message-size estimate.
+-            // Only usage-backed estimates need the stale pre-compaction check.
+-            if (estimate.lastUsageIndex !== null) {
+-                // Verify the usage source is post-compaction. Kept pre-compaction messages
+-                // have stale usage reflecting the old (larger) context and would falsely
+-                // trigger compaction right after one just finished.
+-                const usageMsg = messages[estimate.lastUsageIndex];
+-                if (compactionEntry &&
+-                    usageMsg.role === "assistant" &&
+-                    usageMsg.timestamp <= new Date(compactionEntry.timestamp).getTime()) {
+-                    return false;
+-                }
+-            }
+-            contextTokens = estimate.tokens;
+-        }
+-        else {
+-            contextTokens = directContextTokens;
+-        }
+-        if (shouldCompact(contextTokens, contextWindow, settings)) {
+-            return await this._runAutoCompaction("threshold", false);
++        const effectiveModel = messageModel ?? this._limitsModel();
++        const contextTokens = estimateProjectedContextTokens(currentProjection, branch, effectiveModel).tokens;
++        if (shouldCompact(contextTokens, effectiveModel?.contextWindow ?? 0, this.settingsManager.getCompactionSettings(effectiveModel))) {
++            return await this._runAutoCompaction("threshold", false, effectiveModel);
+         }
+         return false;
+     }
+@@ -2614,9 +3057,9 @@ export class AgentSession {
+      * @param willRetry Whether to continue the interrupted turn after overflow compaction
+      * @returns Whether the post-run loop should call `agent.continue()`
+      */
+-    async _runAutoCompaction(reason, willRetry) {
++    async _runAutoCompaction(reason, willRetry, effectiveModel = this.model) {
+         const model = this.model;
+-        const settings = this.settingsManager.getCompactionSettings(model);
++        const settings = this.settingsManager.getCompactionSettings(effectiveModel);
+         let abortController;
+         let started = false;
+         let fromExtension = false;
+@@ -2626,8 +3069,13 @@ export class AgentSession {
+                 return false;
+             }
+             const pathEntries = this.sessionManager.getBranch();
+-            const preparation = prepareCompaction(pathEntries, settings);
++            const host = this._hostEnabled();
++            const baseline = { leaf: this.sessionManager.getLeafId(), model: this.model, generation: this._hostGeneration };
++            const preparation = prepareCompaction(pathEntries, host
++                ? { ...settings, keepRecentTokens: Math.max(settings.keepRecentTokens, this._hostProtectedRecentTokens()) }
++                : settings);
+             if (!preparation) {
++                if (host) this._notifyHostResult({ status: "nothing-to-compact" });
+                 return false;
+             }
+             abortController = new AbortController();
+@@ -2640,6 +3088,7 @@ export class AgentSession {
+                 const extensionResult = (await this._extensionRunner.emit({
+                     type: "session_before_compact",
+                     preparation,
++                    model: effectiveModel,
+                     branchEntries: pathEntries,
+                     customInstructions: undefined,
+                     reason,
+@@ -2679,7 +3128,14 @@ export class AgentSession {
+                 details = compactResult.details;
+             }
+             abortController.signal.throwIfAborted();
++            if (host && (baseline.leaf !== this.sessionManager.getLeafId() || baseline.model !== this.model
++                || baseline.generation !== this._hostGeneration || this._hostDisposed)) {
++                const error = new Error("Context changed before compaction could be committed");
++                error.contextChanged = true;
++                throw error;
++            }
+             this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
++            if (host && this._hostRequestRoute) this._hostRequestRoute.baseline = this._hostSnapshot();
+             const newEntries = this.sessionManager.getEntries();
+             this._refreshFinalizedContext();
+             const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
+@@ -2703,6 +3159,10 @@ export class AgentSession {
+                 details,
+             };
+             this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
++            if (this._hostEnabled()) {
++                this._hostCompactedForRequest = true;
++                this._notifyHostResult({ status: "success" });
++            }
+             if (willRetry)
+                 return true;
+             // Auto-compaction can complete while follow-up/steering/custom messages are waiting.
+@@ -2712,6 +3172,10 @@ export class AgentSession {
+         catch (error) {
+             const message = error instanceof Error ? error.message : "compaction failed";
+             const aborted = abortController?.signal.aborted === true || cancelledByExtension;
++            if (this._hostEnabled() && !aborted && !this._hostDisposed) {
++                this._notifyHostResult({ status: error?.contextChanged ? "context-changed" : "failed", errorMessage: message });
++            }
++            if (this._hostEnabled() && aborted && !this._hostDisposed) this._notifyHostResult({ status: "cancelled" });
+             if (started) {
+                 const errorMessage = aborted
+                     ? undefined
+@@ -2746,14 +3210,14 @@ export class AgentSession {
+     /**
+      * Toggle auto-compaction setting.
+      */
+-    setAutoCompactionEnabled(enabled) {
++    _idleBody_setAutoCompactionEnabled(enabled) {
+         this.settingsManager.setCompactionEnabled(enabled);
+     }
+     /** Whether auto-compaction is enabled */
+     get autoCompactionEnabled() {
+         return this.settingsManager.getCompactionEnabled();
+     }
+-    async bindExtensions(bindings) {
++    async _idleBody_bindExtensions(bindings) {
+         if (bindings.uiContext !== undefined) {
+             this._extensionUIContext = bindings.uiContext;
+         }
+@@ -2777,7 +3241,7 @@ export class AgentSession {
+         this._extensionRunner.reportUnhandledMcpServers();
+         await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+     }
+-    async extendResourcesFromExtensions(reason) {
++    async _idleBody_extendResourcesFromExtensions(reason) {
+         if (!this._extensionRunner.hasHandlers("resources_discover")) {
+             return;
+         }
+@@ -2858,6 +3322,9 @@ export class AgentSession {
+             return [...extensionCommands, ...templates, ...skills];
+         };
+         runner.bindCore({
++            runSessionOperation: (operation) => this._idleAsync(operation),
++            runSessionCleanup: (operation) => this._idleCleanup(operation),
++            runSessionOperationSync: (operation) => this._idleSync(operation),
+             sendMessage: (message, options) => {
+                 this.sendCustomMessage(message, options).catch((err) => {
+                     runner.emitError({
+@@ -2876,27 +3343,21 @@ export class AgentSession {
+                     });
+                 });
+             },
+-            appendEntry: (customType, data) => {
+-                const entryId = this.sessionManager.appendCustomEntry(customType, data);
+-                const entry = this.sessionManager.getEntry(entryId);
+-                if (entry) {
+-                    this._emit({ type: "entry_appended", entry });
+-                }
+-            },
++            appendEntry: (customType, data) => this._idleSync(() => { this._appendCustomEntry(customType, data); }),
+             setSessionName: (name) => {
+                 this.setSessionName(name);
+             },
+             getSessionName: () => {
+                 return this.sessionManager.getSessionName();
+             },
+-            setLabel: (entryId, label) => {
++            setLabel: (entryId, label) => this._idleSync(() => {
+                 this.sessionManager.appendLabelChange(entryId, label);
+-            },
++            }),
+             getActiveTools: () => this.getActiveToolNames(),
+             getAllTools: () => this.getAllTools(),
+             getSettings: () => this.settingsManager.getSettings(),
+             setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+-            refreshTools: () => this._refreshToolRegistry(),
++            refreshTools: () => this._idleSync(() => this._refreshToolRegistry()),
+             getCommands,
+             setModel: async (model) => {
+                 if (!this._modelRuntime.hasConfiguredAuth(model.provider))
+@@ -2941,26 +3402,26 @@ export class AgentSession {
+             executeTool: (callerId, name, args, options) => this._executeNestedToolCall(callerId, name, args, options),
+             getCallableTools: () => this._getCallableTools(),
+         }, {
+-            registerProvider: (name, config) => {
++            registerProvider: (name, config) => this._idleSync(() => {
+                 this._modelRuntime.registerProvider(name, config);
+                 this._refreshCurrentModelFromRegistry();
+-            },
+-            registerNativeProvider: (provider) => {
++            }),
++            registerNativeProvider: (provider) => this._idleSync(() => {
+                 this._modelRuntime.registerNativeProvider(provider);
+                 this._refreshCurrentModelFromRegistry();
+-            },
+-            unregisterProvider: (name) => {
++            }),
++            unregisterProvider: (name) => this._idleSync(() => {
+                 this._modelRuntime.unregisterProvider(name);
+                 this._refreshCurrentModelFromRegistry();
+-            },
+-            registerVirtualModel: (definition) => {
++            }),
++            registerVirtualModel: (definition) => this._idleSync(() => {
+                 this._modelRuntime.registerVirtualModel(definition);
+                 this._refreshCurrentModelFromRegistry();
+-            },
+-            unregisterVirtualModel: (provider, id) => {
++            }),
++            unregisterVirtualModel: (provider, id) => this._idleSync(() => {
+                 this._modelRuntime.unregisterVirtualModel(provider, id);
+                 this._refreshCurrentModelFromRegistry();
+-            },
++            }),
+         });
+     }
+     _refreshToolRegistry(options) {
+@@ -3091,13 +3552,14 @@ export class AgentSession {
+             includeAllExtensionTools: options.includeAllExtensionTools,
+         });
+     }
+-    async reload(options) {
++    async _idleBody_reload(options) {
+         if (this.isStreaming) {
+             throw new Error("Wait for the current response to finish before reloading.");
+         }
+         if (this.isCompacting) {
+             throw new Error("Wait for compaction to finish before reloading.");
+         }
++        this._hostGeneration = (this._hostGeneration ?? 0) + 1;
+         const oldRunner = this._extensionRunner;
+         const previousFlagValues = oldRunner.getFlagValues();
+         await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
+@@ -3242,7 +3704,7 @@ export class AgentSession {
+     /**
+      * Toggle auto-retry setting.
+      */
+-    setAutoRetryEnabled(enabled) {
++    _idleBody_setAutoRetryEnabled(enabled) {
+         this.settingsManager.setRetryEnabled(enabled);
+     }
+     // =========================================================================
+@@ -3257,7 +3719,7 @@ export class AgentSession {
+      * @param options.id Optional identifier included in bash execution update events
+      * @param options.operations Custom BashOperations for remote execution
+      */
+-    async executeBash(command, onChunk, options) {
++    async _idleBody_executeBash(command, onChunk, options) {
+         const abortController = new AbortController();
+         this._bashAbortControllers.add(abortController);
+         // Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
+@@ -3283,7 +3745,7 @@ export class AgentSession {
+      * Record a bash execution result in session history.
+      * Used by executeBash and by extensions that handle bash execution themselves.
+      */
+-    recordBashResult(command, result, options) {
++    _idleBody_recordBashResult(command, result, options) {
+         const bashMessage = {
+             role: "bashExecution",
+             command,
+@@ -3340,7 +3802,7 @@ export class AgentSession {
+     /**
+      * Set a display name for the current session.
+      */
+-    setSessionName(name) {
++    _idleBody_setSessionName(name) {
+         this.sessionManager.appendSessionInfo(name);
+         const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() };
+         this._emit(event);
+@@ -3360,7 +3822,7 @@ export class AgentSession {
+      * @param options.label Label to attach to the branch summary entry
+      * @returns Result with editorText (if user message) and cancelled status
+      */
+-    async navigateTree(targetId, options = {}) {
++    async _idleBody_navigateTree(targetId, options = {}) {
+         if (this.isStreaming || this._promptPreflightCount > 0) {
+             throw new Error("Wait for the current response to finish before navigating the session tree.");
+         }
+@@ -3479,6 +3941,8 @@ export class AgentSession {
+                 // Non-user message: leaf = selected node
+                 newLeafId = targetId;
+             }
++            // Navigation invalidates a request route even if the user later returns to its old leaf.
++            this._hostRequestRoute = undefined;
+             // Switch leaf (with or without summary)
+             // Summary is attached at the navigation target position (newLeafId), not the old branch
+             let summaryEntry;
+@@ -3605,7 +4069,7 @@ export class AgentSession {
+         };
+     }
+     getContextUsage() {
+-        const model = this._limitsModel();
++        const model = this._hostUsageRoute()?.route.model ?? this._limitsModel();
+         if (!model)
+             return undefined;
+         const contextWindow = model.contextWindow ?? 0;
+@@ -3631,7 +4095,7 @@ export class AgentSession {
+             if (!hasPostCompactionUsage)
+                 return { tokens: null, contextWindow, percent: null };
+         }
+-        const estimate = estimateProjectedContextTokens(projection, branch);
++        const estimate = estimateProjectedContextTokens(projection, branch, model);
+         const percent = (estimate.tokens / contextWindow) * 100;
+         return {
+             tokens: estimate.tokens,
+@@ -3672,7 +4136,7 @@ export class AgentSession {
+      * Ask the current model to describe what went wrong in this session for a bug report.
+      * Used when the user declines to share the transcript itself.
+      */
+-    async summarizeForBugReport(options) {
++    async _idleBody_summarizeForBugReport(options) {
+         const model = this.model;
+         if (!model) {
+             throw new Error("No model selected");
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.d.ts
+index bdf9448..c2b2d85 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.d.ts
+@@ -38,6 +38,7 @@ export interface CacheWarmRequest {
+  */
+ export declare class CacheWarmer {
+     private run?;
++    private refreshesInFlight;
+     private inactive;
+     private readonly models;
+     private readonly sessionManager;
+@@ -47,6 +48,7 @@ export declare class CacheWarmer {
+     /** Called with the persisted usage entry after each successful refresh. */
+     onWarmed?: (entry: UsageEntry) => void;
+     constructor(models: Pick<ModelRuntime, "streamSimple">, sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">, getMode: () => CacheWarmingMode, decide?: (event: CacheWarmingDecisionEvent) => Promise<CacheWarmingAction>);
++    get hasPendingWork(): boolean;
+     get status(): CacheWarmingStatus;
+     /** Keep the prompt cache entry written by `request` warm while `isCurrent` holds. */
+     start(request: CacheWarmRequest, isCurrent: () => boolean): void;
+@@ -58,6 +60,7 @@ export declare class CacheWarmer {
+     private stop;
+     private schedule;
+     private refresh;
++    private refreshBody;
+     private refreshDeadlineMissed;
+     private validateRun;
+     private getModeStopReason;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js
+index 9312abf..a58bc6d 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js
+@@ -17,6 +17,7 @@ function lastPromptTokens(entries) {
+  */
+ export class CacheWarmer {
+     run;
++    refreshesInFlight = 0;
+     inactive;
+     models;
+     sessionManager;
+@@ -32,6 +33,9 @@ export class CacheWarmer {
+         this.decide = decide;
+         this.inactive = { state: "inactive", reason: "waiting for first request" };
+     }
++    get hasPendingWork() {
++        return this.run !== undefined || this.refreshesInFlight > 0;
++    }
+     get status() {
+         if (this.getMode() === "off")
+             return { state: "inactive", reason: "cache warming disabled" };
+@@ -145,6 +149,15 @@ export class CacheWarmer {
+         run.timer.unref?.();
+     }
+     async refresh(run) {
++        this.refreshesInFlight++;
++        try {
++            await this.refreshBody(run);
++        }
++        finally {
++            this.refreshesInFlight--;
++        }
++    }
++    async refreshBody(run) {
+         run.timer = undefined;
+         if (!this.validateRun(run))
+             return;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.d.ts
+index 4c2a270..489ffac 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.d.ts
+@@ -52,7 +52,7 @@ export interface ContextUsageEstimate {
+  */
+ export declare function estimateContextTokens(messages: AgentMessage[]): ContextUsageEstimate;
+ /** Estimate projected context without trusting usage captured before a later edit or compaction. */
+-export declare function estimateProjectedContextTokens(projection: SessionProjection, branchEntries: SessionEntry[]): ContextUsageEstimate;
++export declare function estimateProjectedContextTokens(projection: SessionProjection, branchEntries: SessionEntry[], model?: Pick<Model, "provider" | "id">): ContextUsageEstimate;
+ /**
+  * Check if compaction should trigger based on context usage.
+  */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js
+index 9b1a409..7c821f2 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js
+@@ -134,7 +134,7 @@ export function estimateContextTokens(messages) {
+     };
+ }
+ /** Estimate projected context without trusting usage captured before a later edit or compaction. */
+-export function estimateProjectedContextTokens(projection, branchEntries) {
++export function estimateProjectedContextTokens(projection, branchEntries, model) {
+     const estimate = estimateContextTokens(projection.messages);
+     if (estimate.lastUsageIndex !== null) {
+         let projectedMessageIndex = 0;
+@@ -156,7 +156,10 @@ export function estimateProjectedContextTokens(projection, branchEntries) {
+                 break;
+             }
+         }
+-        if (usageEntryIndex > latestInvalidatingEntryIndex)
++        const usageMessage = projection.messages[estimate.lastUsageIndex];
++        // Compare the physical request route, not a virtual selection or an intermediate model switch.
++        const sameModel = !model || (usageMessage.provider === model.provider && usageMessage.model === model.id);
++        if (usageEntryIndex > latestInvalidatingEntryIndex && sameModel)
+             return estimate;
+     }
+     const currentSystem = getCurrentSystemMessage(projection.messages);
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js
+index 7fad6e0..762b87f 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js
+@@ -2,6 +2,7 @@
+  * Extension loader - loads TypeScript extension modules using jiti.
+  *
+  */
++import { AsyncLocalStorage } from "node:async_hooks";
+ import * as fs from "node:fs";
+ import { createRequire } from "node:module";
+ import * as path from "node:path";
+@@ -120,6 +121,9 @@ export function createExtensionRuntime() {
+         }
+     };
+     const runtime = {
++        runSessionOperation: (operation) => operation(),
++        runSessionCleanup: (operation) => operation(),
++        runSessionOperationSync: (operation) => operation(),
+         sendMessage: notInitialized,
+         sendUserMessage: notInitialized,
+         appendEntry: notInitialized,
+@@ -193,6 +197,7 @@ export function createExtensionRuntime() {
+  */
+ const DEFAULT_MARKDOWN_MESSAGE_TYPES = ["user", "assistant", "assistant-thinking"];
+ function createExtensionAPI(extension, runtime, cwd, eventBus) {
++    const shutdownScope = new AsyncLocalStorage();
+     const pendingFlagValues = new Map();
+     const pendingRuntimeChanges = [];
+     const loadingUnsubscribers = [];
+@@ -207,7 +212,7 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+         if (state === "loading")
+             pendingRuntimeChanges.push(change);
+         else
+-            change();
++            runtime.runSessionOperationSync(change);
+     };
+     const clearPending = () => {
+         pendingFlagValues.clear();
+@@ -218,32 +223,53 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+         // Registration methods - write to extension
+         on(event, handler) {
+             assertActive();
+-            const registeredHandler = (...args) => handler(...args);
+-            const list = extension.handlers.get(event) ?? [];
+-            list.push(registeredHandler);
+-            extension.handlers.set(event, list);
+-            return () => {
+-                const handlers = extension.handlers.get(event);
+-                if (!handlers)
+-                    return;
+-                const handlerIndex = handlers.indexOf(registeredHandler);
+-                if (handlerIndex === -1)
+-                    return;
+-                handlers.splice(handlerIndex, 1);
+-                if (handlers.length === 0)
+-                    extension.handlers.delete(event);
+-            };
++            return runtime.runSessionOperationSync(() => {
++                const registeredHandler = event === "session_shutdown"
++                    ? (...args) => {
++                        const scope = { active: true };
++                        return shutdownScope.run(scope, () => {
++                            let pending = false;
++                            try {
++                                const result = handler(...args);
++                                if (result && typeof result.then === "function") {
++                                    const cleanup = Promise.resolve(result).finally(() => { scope.active = false; });
++                                    pending = true;
++                                    return cleanup;
++                                }
++                                return result;
++                            }
++                            finally { if (!pending) scope.active = false; }
++                        });
++                    }
++                    : (...args) => handler(...args);
++                const list = extension.handlers.get(event) ?? [];
++                list.push(registeredHandler);
++                extension.handlers.set(event, list);
++                return () => {
++                    const handlers = extension.handlers.get(event);
++                    if (!handlers)
++                        return;
++                    const handlerIndex = handlers.indexOf(registeredHandler);
++                    if (handlerIndex === -1)
++                        return;
++                    handlers.splice(handlerIndex, 1);
++                    if (handlers.length === 0)
++                        extension.handlers.delete(event);
++                };
++            });
+         },
+         registerTool(tool) {
+             assertActive();
+             if (typeof tool.parameters !== "object" || tool.parameters === null || Array.isArray(tool.parameters)) {
+                 throw new Error(`Tool "${tool.name}" registered by extension "${extension.path}" must define an object parameter schema.`);
+             }
+-            extension.tools.set(tool.name, {
+-                definition: tool,
+-                sourceInfo: extension.sourceInfo,
++            runtime.runSessionOperationSync(() => {
++                extension.tools.set(tool.name, {
++                    definition: tool,
++                    sourceInfo: extension.sourceInfo,
++                });
++                runtime.refreshTools();
+             });
+-            runtime.refreshTools();
+         },
+         registerCommand(name, options) {
+             assertActive();
+@@ -253,52 +279,56 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+             if (typeof options?.handler !== "function") {
+                 throw new Error(`Command "/${name}" registered by extension "${extension.path}" must define handler().`);
+             }
+-            extension.commands.set(name, {
++            runtime.runSessionOperationSync(() => extension.commands.set(name, {
+                 name,
+                 sourceInfo: extension.sourceInfo,
+                 ...options,
+-            });
++            }));
+         },
+         registerShortcut(shortcut, options) {
+             assertActive();
+-            extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
++            runtime.runSessionOperationSync(() => extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options }));
+         },
+         registerFlag(name, options) {
+             assertActive();
+             if (options.default !== undefined && typeof options.default !== options.type) {
+                 throw new Error(`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`);
+             }
+-            extension.flags.set(name, { name, extensionPath: extension.path, ...options });
+-            if (options.default !== undefined && !runtime.flagValues.has(name)) {
+-                if (state === "loading") {
+-                    if (!pendingFlagValues.has(name))
+-                        pendingFlagValues.set(name, options.default);
++            runtime.runSessionOperationSync(() => {
++                extension.flags.set(name, { name, extensionPath: extension.path, ...options });
++                if (options.default !== undefined && !runtime.flagValues.has(name)) {
++                    if (state === "loading") {
++                        if (!pendingFlagValues.has(name)) pendingFlagValues.set(name, options.default);
++                    } else {
++                        runtime.flagValues.set(name, options.default);
++                    }
+                 }
+-                else {
+-                    runtime.flagValues.set(name, options.default);
+-                }
+-            }
++            });
+         },
+         registerMessageRenderer(customType, renderer) {
+             assertActive();
+-            extension.messageRenderers.set(customType, renderer);
++            runtime.runSessionOperationSync(() => extension.messageRenderers.set(customType, renderer));
+         },
+         registerMarkdownTransformer(transformer, options) {
+             assertActive();
+-            extension.markdownTransformer = {
++            runtime.runSessionOperationSync(() => { extension.markdownTransformer = {
+                 transformer,
+                 messageTypes: new Set(options?.messageTypes ?? DEFAULT_MARKDOWN_MESSAGE_TYPES),
+-            };
++            }; });
+         },
+         registerEntryRenderer(customType, renderer) {
+             assertActive();
+-            extension.entryRenderers ??= new Map();
+-            extension.entryRenderers.set(customType, renderer);
++            runtime.runSessionOperationSync(() => {
++                extension.entryRenderers ??= new Map();
++                extension.entryRenderers.set(customType, renderer);
++            });
+         },
+         registerToolRenderer(resolver) {
+             assertActive();
+-            extension.toolRenderers ??= [];
+-            extension.toolRenderers.push(resolver);
++            runtime.runSessionOperationSync(() => {
++                extension.toolRenderers ??= [];
++                extension.toolRenderers.push(resolver);
++            });
+         },
+         // Flag access - checks extension registered it, reads from runtime
+         getFlag(name) {
+@@ -334,7 +364,8 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+         },
+         exec(command, args, options) {
+             assertActive();
+-            return execCommand(command, args, options?.cwd ?? cwd, options);
++            const run = shutdownScope.getStore()?.active ? runtime.runSessionCleanup : runtime.runSessionOperation;
++            return run(() => execCommand(command, args, options?.cwd ?? cwd, options));
+         },
+         getActiveTools() {
+             assertActive();
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js
+index 79d0da0..9df0943 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js
+@@ -207,6 +207,9 @@ export class ExtensionRunner {
+     }
+     bindCore(actions, contextActions, providerActions) {
+         // Copy actions into the shared runtime (all extension APIs reference this)
++        this.runtime.runSessionOperation = actions.runSessionOperation ?? ((operation) => operation());
++        this.runtime.runSessionCleanup = actions.runSessionCleanup ?? ((operation) => operation());
++        this.runtime.runSessionOperationSync = actions.runSessionOperationSync ?? ((operation) => operation());
+         this.runtime.sendMessage = actions.sendMessage;
+         this.runtime.sendUserMessage = actions.sendUserMessage;
+         this.runtime.appendEntry = actions.appendEntry;
+@@ -764,7 +767,8 @@ export class ExtensionRunner {
+         };
+         return context;
+     }
+-    async emitBoundary(baseEvent, buildContext) {
++    async emitBoundary(...args) { return this.runtime.runSessionOperation(() => this.#emitBoundary(...args)); }
++    async #emitBoundary(baseEvent, buildContext) {
+         const ctx = this.createContext();
+         let entries = [];
+         let shouldContinue = false;
+@@ -819,6 +823,10 @@ export class ExtensionRunner {
+             event.type === "session_before_tree");
+     }
+     async emit(event) {
++        if (event.type === "session_shutdown") return this.runtime.runSessionCleanup(() => this.#emit(event));
++        return this.runtime.runSessionOperation(() => this.#emit(event));
++    }
++    async #emit(event) {
+         const ctx = this.createContext();
+         let result;
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+@@ -847,7 +855,8 @@ export class ExtensionRunner {
+         return result;
+     }
+     /** Returns the event's own action unless a handler overrides it; the last override wins. */
+-    async emitCacheWarmingDecision(event) {
++    async emitCacheWarmingDecision(...args) { return this.runtime.runSessionOperation(() => this.#emitCacheWarmingDecision(...args)); }
++    async #emitCacheWarmingDecision(event) {
+         const ctx = this.createContext();
+         let action = event.action;
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+@@ -869,7 +878,8 @@ export class ExtensionRunner {
+         }
+         return action;
+     }
+-    async emitMessageEnd(event) {
++    async emitMessageEnd(...args) { return this.runtime.runSessionOperation(() => this.#emitMessageEnd(...args)); }
++    async #emitMessageEnd(event) {
+         const ctx = this.createContext();
+         let currentMessage = event.message;
+         let modified = false;
+@@ -905,7 +915,8 @@ export class ExtensionRunner {
+         }
+         return modified ? currentMessage : undefined;
+     }
+-    async emitToolResult(event) {
++    async emitToolResult(...args) { return this.runtime.runSessionOperation(() => this.#emitToolResult(...args)); }
++    async #emitToolResult(event) {
+         const ctx = this.createContext();
+         const currentEvent = { ...event };
+         let modified = false;
+@@ -962,7 +973,8 @@ export class ExtensionRunner {
+             usage: currentEvent.usage,
+         };
+     }
+-    async emitToolCall(event) {
++    async emitToolCall(...args) { return this.runtime.runSessionOperation(() => this.#emitToolCall(...args)); }
++    async #emitToolCall(event) {
+         const ctx = this.createContext();
+         let result;
+         for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
+@@ -978,7 +990,8 @@ export class ExtensionRunner {
+         }
+         return result;
+     }
+-    async emitUserBash(event) {
++    async emitUserBash(...args) { return this.runtime.runSessionOperation(() => this.#emitUserBash(...args)); }
++    async #emitUserBash(event) {
+         const ctx = this.createContext();
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
+             for (const handler of handlers) {
+@@ -1011,7 +1024,8 @@ export class ExtensionRunner {
+      * only and Pi restores the prompt and tool state after each; `context_with_system`
+      * handlers then see the full transcript and their output is used as returned.
+      */
+-    async emitContext(messages) {
++    async emitContext(...args) { return this.runtime.runSessionOperation(() => this.#emitContext(...args)); }
++    async #emitContext(messages) {
+         const ctx = this.createContext();
+         let currentMessages = structuredClone(messages);
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
+@@ -1071,7 +1085,8 @@ export class ExtensionRunner {
+         }
+         return currentMessages;
+     }
+-    async emitBeforeProviderRequest(payload) {
++    async emitBeforeProviderRequest(...args) { return this.runtime.runSessionOperation(() => this.#emitBeforeProviderRequest(...args)); }
++    async #emitBeforeProviderRequest(payload) {
+         const ctx = this.createContext();
+         let currentPayload = payload;
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
+@@ -1100,7 +1115,8 @@ export class ExtensionRunner {
+         }
+         return currentPayload;
+     }
+-    async emitBeforeProviderHeaders(headers) {
++    async emitBeforeProviderHeaders(...args) { return this.runtime.runSessionOperation(() => this.#emitBeforeProviderHeaders(...args)); }
++    async #emitBeforeProviderHeaders(headers) {
+         const ctx = this.createContext();
+         for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
+             for (const handler of handlers) {
+@@ -1126,7 +1142,8 @@ export class ExtensionRunner {
+         }
+         return headers;
+     }
+-    async emitBeforeAgentStart(trigger, systemPromptOptions) {
++    async emitBeforeAgentStart(...args) { return this.runtime.runSessionOperation(() => this.#emitBeforeAgentStart(...args)); }
++    async #emitBeforeAgentStart(trigger, systemPromptOptions) {
+         const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
+         const renderCurrentSystemPrompt = () => buildSystemPrompt(currentOptions);
+         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
+@@ -1170,7 +1187,8 @@ export class ExtensionRunner {
+         }
+         return { messages, systemPromptOptions: currentOptions };
+     }
+-    async emitResourcesDiscover(cwd, reason) {
++    async emitResourcesDiscover(...args) { return this.runtime.runSessionOperation(() => this.#emitResourcesDiscover(...args)); }
++    async #emitResourcesDiscover(cwd, reason) {
+         const ctx = this.createContext();
+         const skillPaths = [];
+         const promptPaths = [];
+@@ -1206,7 +1224,8 @@ export class ExtensionRunner {
+         return { skillPaths, promptPaths, themePaths };
+     }
+     /** Emit input event. Transforms chain, "handled" short-circuits. */
+-    async emitInput(text, images, source, streamingBehavior, videos) {
++    async emitInput(...args) { return this.runtime.runSessionOperation(() => this.#emitInput(...args)); }
++    async #emitInput(text, images, source, streamingBehavior, videos) {
+         const ctx = this.createContext();
+         let currentText = text;
+         let currentImages = images;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
+index f527dee..12af6dc 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
+@@ -619,6 +619,8 @@ export interface SessionBeforeForkEvent {
+ }
+ /** Fired before context compaction (can be cancelled or customized) */
+ export interface SessionBeforeCompactEvent {
++    /** Percho: effective physical request model for automatic compaction, when known. */
++    model?: Model<any>;
+     type: "session_before_compact";
+     preparation: CompactionPreparation;
+     branchEntries: SessionEntry[];
+@@ -1639,6 +1641,9 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+  * Contains flag values (defaults set during registration, CLI values set after).
+  */
+ export interface ExtensionRuntimeState {
++    runSessionOperation: <T>(operation: () => Promise<T>) => Promise<T>;
++    runSessionCleanup: <T>(operation: () => Promise<T>) => Promise<T>;
++    runSessionOperationSync: <T>(operation: () => T) => T;
+     flagValues: Map<string, boolean | string>;
+     /** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
+     pendingProviderRegistrations: Array<{
+@@ -1683,6 +1688,9 @@ export interface ExtensionRuntimeState {
+  * Provided to runner.initialize(), copied into the shared runtime.
+  */
+ export interface ExtensionActions {
++    runSessionOperation?: <T>(operation: () => Promise<T>) => Promise<T>;
++    runSessionCleanup?: <T>(operation: () => Promise<T>) => Promise<T>;
++    runSessionOperationSync?: <T>(operation: () => T) => T;
+     sendMessage: SendMessageHandler;
+     sendUserMessage: SendUserMessageHandler;
+     appendEntry: AppendEntryHandler;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
+index c042aaf..4dc3c23 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
+@@ -259,7 +259,7 @@ export declare class SessionManager {
+      * first assistant reply) keeps the prompt on disk if the first turn never completes (#10000).
+      */
+     private _hasConversation;
+-    _persist(entry: SessionEntry): void;
++    _persist(entry: SessionEntry, requireExisting?: boolean): void;
+     private _appendEntry;
+     /** Append a message as child of current leaf, then advance leaf. Returns entry id.
+      * Does not allow writing CompactionSummaryMessage and BranchSummaryMessage directly.
+@@ -277,7 +277,7 @@ export declare class SessionManager {
+     /** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
+     appendCompaction<T = unknown>(summary: string, firstKeptEntryId: string | null, tokensBefore: number, details?: T, fromHook?: boolean, usage?: Usage): string;
+     /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
+-    appendCustomEntry(customType: string, data?: unknown): string;
++    appendCustomEntry(customType: string, data?: unknown, options?: { requireExisting?: boolean }): string;
+     /** Append a session info entry (e.g., display name). Returns entry id. */
+     appendSessionInfo(name: string): string;
+     /** Get the current session name from the latest session_info entry, if any. */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
+index 7ee0501..9d290bb 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
+@@ -1,6 +1,6 @@
+ import { getCurrentSystemMessage, uuidv7, } from "@earendil-works/pi-ai";
+ import { randomUUID } from "crypto";
+-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync, } from "fs";
++import { appendFileSync, closeSync, constants, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync, } from "fs";
+ import { readdir, stat } from "fs/promises";
+ import { basename, join, resolve } from "path";
+ import { createInterface } from "readline";
+@@ -792,7 +792,10 @@ export class SessionManager {
+     _hasConversation() {
+         return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));
+     }
+-    _persist(entry) {
++    _persist(entry, requireExisting = false) {
++        if (requireExisting && (!this.persist || !this.sessionFile || !this.flushed)) {
++            throw new Error("Maintenance requires an existing persisted session");
++        }
+         if (!this.persist || !this.sessionFile)
+             return;
+         if (!this.flushed) {
+@@ -810,16 +813,17 @@ export class SessionManager {
+             this.flushed = true;
+         }
+         else {
+-            appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
++            appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`,
++                requireExisting ? { flag: constants.O_WRONLY | constants.O_APPEND } : undefined);
+         }
+     }
+-    _appendEntry(entry) {
++    _appendEntry(entry, requireExisting = false) {
+         const previousLeafId = this.leafId;
+         this.fileEntries.push(entry);
+         this.byId.set(entry.id, entry);
+         this.leafId = entry.id;
+         try {
+-            this._persist(entry);
++            this._persist(entry, requireExisting);
+         }
+         catch (error) {
+             // Keep memory in line with the file: an entry that was not written must not become the
+@@ -910,7 +914,7 @@ export class SessionManager {
+         return entry.id;
+     }
+     /** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
+-    appendCustomEntry(customType, data) {
++    appendCustomEntry(customType, data, options) {
+         const entry = {
+             type: "custom",
+             customType,
+@@ -919,7 +923,7 @@ export class SessionManager {
+             parentId: this.leafId,
+             timestamp: new Date().toISOString(),
+         };
+-        this._appendEntry(entry);
++        this._appendEntry(entry, options?.requireExisting);
+         return entry.id;
+     }
+     /** Append a session info entry (e.g., display name). Returns entry id. */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
+index bb8acdb..191a042 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
+@@ -1,6 +1,6 @@
+ export { type Args, parseArgs } from "./cli/args.ts";
+ export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.ts";
+-export { AgentSession, type AgentSessionConfig, type AgentSessionEvent, type AgentSessionEventListener, type ModelCycleResult, type ParsedSkillBlock, type PromptOptions, parseSkillBlock, type SessionStats, } from "./core/agent-session.ts";
++export { AgentSession, type SessionIdleLease, type AgentSessionConfig, type CompactionPause, type CompactionRequestPolicy, type AgentSessionEvent, type AgentSessionEventListener, type ModelCycleResult, type ParsedSkillBlock, type PromptOptions, parseSkillBlock, type SessionStats, } from "./core/agent-session.ts";
+ export { readStoredCredential } from "./core/auth-storage.ts";
+ export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
+ export { type BranchPreparation, type BranchSummaryResult, type CollectEntriesResult, type CompactionResult, type CutPointResult, calculateContextTokens, collectEntriesForBranchSummary, compact, DEFAULT_COMPACTION_SETTINGS, estimateTokens, type FileOperations, findCutPoint, findTurnStartIndex, type GenerateBranchSummaryOptions, generateBranchSummary, generateSummary, generateSummaryWithUsage, getLastAssistantUsage, prepareBranchEntries, serializeConversation, shouldCompact, } from "./core/compaction/index.ts";

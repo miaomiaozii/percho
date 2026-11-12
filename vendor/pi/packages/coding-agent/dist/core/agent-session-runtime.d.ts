@@ -101,6 +101,11 @@ export declare class AgentSessionRuntime {
     importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{
         cancelled: boolean;
     }>;
+    /**
+     * Dispose the session for process exit. Also waits for credential writes in progress: an OAuth
+     * refresh may already have spent the old single-use refresh token, so exiting before the new one
+     * is saved would lose the login (#11692).
+     */
     dispose(): Promise<void>;
 }
 /**

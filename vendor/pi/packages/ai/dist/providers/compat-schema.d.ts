@@ -69,6 +69,8 @@ export declare const OpenAICompletionsCompatSchema: import("@earendil-works/pi-s
     maxTokensField?: "max_completion_tokens" | "max_tokens" | undefined;
     requiresToolResultName?: boolean | undefined;
     requiresAssistantAfterToolResult?: boolean | undefined;
+    requiresNonNullAssistantContent?: boolean | undefined;
+    requiresToolsWithToolHistory?: boolean | undefined;
     requiresThinkingAsText?: boolean | undefined;
     requiresReasoningContentOnAssistantMessages?: boolean | undefined;
     thinkingFormat?: "ant-ling" | "baseten" | "chat-template" | "deepseek" | "openai" | "openrouter" | "qwen" | "qwen-chat-template" | "string-thinking" | "together" | "zai" | undefined;
@@ -128,6 +130,7 @@ export declare const OpenAICompletionsCompatSchema: import("@earendil-works/pi-s
     cacheControlFormat?: "anthropic" | undefined;
     sendSessionAffinityHeaders?: boolean | undefined;
     sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+    promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
     supportsLongCacheRetention?: boolean | undefined;
     vllmPriority?: number | undefined;
     videoPartFormat?: "input_video" | "video_url" | undefined;
@@ -136,6 +139,7 @@ export declare const OpenAIResponsesCompatSchema: import("@earendil-works/pi-sch
     supportsDeveloperRole?: boolean | undefined;
     supportsMidConvoSystemMessages?: boolean | undefined;
     sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+    promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
     supportsLongCacheRetention?: boolean | undefined;
     supportsStrictMode?: boolean | undefined;
     supportsOpenAIGrammarTools?: boolean | undefined;
@@ -159,6 +163,7 @@ export declare const AnthropicMessagesCompatSchema: import("@earendil-works/pi-s
     supportsMidConvoEffort?: boolean | undefined;
     supportsMidConvoSystemMessages?: boolean | undefined;
     supportsMidConvoToolChanges?: boolean | undefined;
+    supportsMessageThreads?: boolean | undefined;
     allowedFallbackModels?: {
         provider: string;
         model: string;
@@ -198,6 +203,8 @@ export declare const CompatSchemasByApi: {
         maxTokensField?: "max_completion_tokens" | "max_tokens" | undefined;
         requiresToolResultName?: boolean | undefined;
         requiresAssistantAfterToolResult?: boolean | undefined;
+        requiresNonNullAssistantContent?: boolean | undefined;
+        requiresToolsWithToolHistory?: boolean | undefined;
         requiresThinkingAsText?: boolean | undefined;
         requiresReasoningContentOnAssistantMessages?: boolean | undefined;
         thinkingFormat?: "ant-ling" | "baseten" | "chat-template" | "deepseek" | "openai" | "openrouter" | "qwen" | "qwen-chat-template" | "string-thinking" | "together" | "zai" | undefined;
@@ -257,6 +264,7 @@ export declare const CompatSchemasByApi: {
         cacheControlFormat?: "anthropic" | undefined;
         sendSessionAffinityHeaders?: boolean | undefined;
         sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+        promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
         supportsLongCacheRetention?: boolean | undefined;
         vllmPriority?: number | undefined;
         videoPartFormat?: "input_video" | "video_url" | undefined;
@@ -265,6 +273,7 @@ export declare const CompatSchemasByApi: {
         supportsDeveloperRole?: boolean | undefined;
         supportsMidConvoSystemMessages?: boolean | undefined;
         sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+        promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
         supportsLongCacheRetention?: boolean | undefined;
         supportsStrictMode?: boolean | undefined;
         supportsOpenAIGrammarTools?: boolean | undefined;
@@ -279,6 +288,7 @@ export declare const CompatSchemasByApi: {
         supportsDeveloperRole?: boolean | undefined;
         supportsMidConvoSystemMessages?: boolean | undefined;
         sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+        promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
         supportsLongCacheRetention?: boolean | undefined;
         supportsStrictMode?: boolean | undefined;
         supportsOpenAIGrammarTools?: boolean | undefined;
@@ -293,6 +303,7 @@ export declare const CompatSchemasByApi: {
         supportsDeveloperRole?: boolean | undefined;
         supportsMidConvoSystemMessages?: boolean | undefined;
         sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+        promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
         supportsLongCacheRetention?: boolean | undefined;
         supportsStrictMode?: boolean | undefined;
         supportsOpenAIGrammarTools?: boolean | undefined;
@@ -316,6 +327,7 @@ export declare const CompatSchemasByApi: {
         supportsMidConvoEffort?: boolean | undefined;
         supportsMidConvoSystemMessages?: boolean | undefined;
         supportsMidConvoToolChanges?: boolean | undefined;
+        supportsMessageThreads?: boolean | undefined;
         allowedFallbackModels?: {
             provider: string;
             model: string;
@@ -357,6 +369,8 @@ export declare const ProviderCompatSchema: import("@earendil-works/pi-schema").S
     maxTokensField?: "max_completion_tokens" | "max_tokens" | undefined;
     requiresToolResultName?: boolean | undefined;
     requiresAssistantAfterToolResult?: boolean | undefined;
+    requiresNonNullAssistantContent?: boolean | undefined;
+    requiresToolsWithToolHistory?: boolean | undefined;
     requiresThinkingAsText?: boolean | undefined;
     requiresReasoningContentOnAssistantMessages?: boolean | undefined;
     thinkingFormat?: "ant-ling" | "baseten" | "chat-template" | "deepseek" | "openai" | "openrouter" | "qwen" | "qwen-chat-template" | "string-thinking" | "together" | "zai" | undefined;
@@ -423,6 +437,7 @@ export declare const ProviderCompatSchema: import("@earendil-works/pi-schema").S
     allowEmptySignature?: boolean | undefined;
     supportsStrictTools?: boolean | undefined;
     supportsMidConvoToolChanges?: boolean | undefined;
+    supportsMessageThreads?: boolean | undefined;
     allowedFallbackModels?: {
         provider: string;
         model: string;
@@ -445,6 +460,7 @@ export declare const ProviderCompatSchema: import("@earendil-works/pi-schema").S
     supportsDeveloperRole?: boolean | undefined;
     supportsMidConvoSystemMessages?: boolean | undefined;
     sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter" | undefined;
+    promptCacheKeyMode?: "auto" | "disabled" | "enabled" | undefined;
     supportsMidConvoEffort?: boolean | undefined;
     supportsLongCacheRetention?: boolean | undefined;
     supportsStrictMode?: boolean | undefined;

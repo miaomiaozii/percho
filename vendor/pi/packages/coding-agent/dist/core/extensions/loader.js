@@ -2,15 +2,17 @@
  * Extension loader - loads TypeScript extension modules using jiti.
  *
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mcpNamespace } from "@earendil-works/pi-mcp";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.js";
-import { pathsEqual, resolvePath } from "../../utils/paths.js";
+import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.js";
 import { createEventBus } from "../event-bus.js";
 import { execCommand } from "../exec.js";
-import { McpServerRegistry, mcpNamespace, validateMcpServerConfig } from "../mcp-servers.js";
+import { McpServerRegistry, validateMcpServerConfig } from "../mcp-servers.js";
 import { readPiManifest } from "../pi-manifest.js";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.js";
 import { time } from "../timings.js";
@@ -203,7 +205,9 @@ export function createExtensionRuntime() {
  * Registration methods write to the extension object.
  * Action methods delegate to the shared runtime.
  */
+const DEFAULT_MARKDOWN_MESSAGE_TYPES = ["user", "assistant", "assistant-thinking"];
 function createExtensionAPI(extension, runtime, cwd, eventBus) {
+    const shutdownScope = new AsyncLocalStorage();
     const pendingFlagValues = new Map();
     const pendingRuntimeChanges = [];
     const loadingUnsubscribers = [];
@@ -230,7 +234,24 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
         on(event, handler) {
             assertActive();
             return runtime.runSessionOperationSync(() => {
-                const registeredHandler = (...args) => handler(...args);
+                const registeredHandler = event === "session_shutdown"
+                    ? (...args) => {
+                        const scope = { active: true };
+                        return shutdownScope.run(scope, () => {
+                            let pending = false;
+                            try {
+                                const result = handler(...args);
+                                if (result && typeof result.then === "function") {
+                                    const cleanup = Promise.resolve(result).finally(() => { scope.active = false; });
+                                    pending = true;
+                                    return cleanup;
+                                }
+                                return result;
+                            }
+                            finally { if (!pending) scope.active = false; }
+                        });
+                    }
+                    : (...args) => handler(...args);
                 const list = extension.handlers.get(event) ?? [];
                 list.push(registeredHandler);
                 extension.handlers.set(event, list);
@@ -287,10 +308,8 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
                 extension.flags.set(name, { name, extensionPath: extension.path, ...options });
                 if (options.default !== undefined && !runtime.flagValues.has(name)) {
                     if (state === "loading") {
-                        if (!pendingFlagValues.has(name))
-                            pendingFlagValues.set(name, options.default);
-                    }
-                    else {
+                        if (!pendingFlagValues.has(name)) pendingFlagValues.set(name, options.default);
+                    } else {
                         runtime.flagValues.set(name, options.default);
                     }
                 }
@@ -300,9 +319,12 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
             assertActive();
             runtime.runSessionOperationSync(() => extension.messageRenderers.set(customType, renderer));
         },
-        registerMarkdownTransformer(transformer) {
+        registerMarkdownTransformer(transformer, options) {
             assertActive();
-            runtime.runSessionOperationSync(() => { extension.markdownTransformer = transformer; });
+            runtime.runSessionOperationSync(() => { extension.markdownTransformer = {
+                transformer,
+                messageTypes: new Set(options?.messageTypes ?? DEFAULT_MARKDOWN_MESSAGE_TYPES),
+            }; });
         },
         registerEntryRenderer(customType, renderer) {
             assertActive();
@@ -352,7 +374,8 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
         },
         exec(command, args, options) {
             assertActive();
-            return runtime.runSessionOperation(() => execCommand(command, args, options?.cwd ?? cwd, options));
+            const run = shutdownScope.getStore()?.active ? runtime.runSessionCleanup : runtime.runSessionOperation;
+            return run(() => execCommand(command, args, options?.cwd ?? cwd, options));
         },
         getActiveTools() {
             assertActive();
@@ -505,7 +528,7 @@ async function loadExtensionModule(extensionPath, cacheToken) {
         moduleCache: false,
         ...resolutionOptions,
     });
-    const module = await jiti.import(extensionPath, { default: true });
+    const module = await jiti.import(canonicalizePath(extensionPath), { default: true });
     const factory = module;
     if (typeof factory !== "function") {
         return undefined;

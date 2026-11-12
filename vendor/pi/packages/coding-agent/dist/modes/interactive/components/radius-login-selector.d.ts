@@ -1,6 +1,5 @@
 /**
- * The `/login` menu with the animated "Sign in with Radius" option. Internal to the interactive mode: the shimmer
- * is Radius-only and is not exposed to other selectors.
+ * The `/login` menu with the animated "Sign in with Radius" option. Internal to the interactive mode.
  */
 import { type TUI } from "@earendil-works/pi-tui";
 import { ExtensionSelectorComponent } from "./extension-selector.ts";

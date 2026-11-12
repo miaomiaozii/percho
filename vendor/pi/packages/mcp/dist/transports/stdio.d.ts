@@ -16,8 +16,7 @@ export interface StdioTransportOptions {
 export declare class StdioTransport extends TransportEvents implements McpTransport {
     readonly options: Readonly<StdioTransportOptions>;
     private child;
-    private stdoutBuffer;
-    private stderrBuffer;
+    private readonly lines;
     private started;
     private closed;
     constructor(options: StdioTransportOptions);
@@ -26,7 +25,5 @@ export declare class StdioTransport extends TransportEvents implements McpTransp
     start(): Promise<void>;
     send(message: JsonRpcMessage): Promise<void>;
     close(): Promise<void>;
-    private handleStdout;
-    private handleStderr;
 }
 //# sourceMappingURL=stdio.d.ts.map

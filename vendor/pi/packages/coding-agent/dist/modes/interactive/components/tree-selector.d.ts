@@ -76,6 +76,7 @@ declare class TreeList implements Component {
  */
 export declare class TreeSelectorComponent extends Container implements Focusable {
     private treeList;
+    private searchLine;
     private labelInput;
     private labelInputContainer;
     private treeContainer;

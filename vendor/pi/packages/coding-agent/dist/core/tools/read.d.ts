@@ -44,6 +44,14 @@ export interface ReadOperations {
     detectVideoMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
     /** Read a file size before loading large media into memory. */
     getSize?: (absolutePath: string) => Promise<number>;
+    /**
+     * Stream file contents in chunks. When present, text files are read through it and only the lines
+     * that will be shown are kept in memory; otherwise readFile loads the whole file. Stop reading when
+     * the signal aborts; the read tool also stops consuming the stream then.
+     */
+    createReadStream?: (absolutePath: string, options: {
+        signal?: AbortSignal;
+    }) => AsyncIterable<Uint8Array>;
 }
 export interface ReadToolOptions {
     /** Whether to auto-resize images. Default: true */

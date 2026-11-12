@@ -56,7 +56,7 @@ export declare const SETTINGS_DEFAULTS: {
         readonly mode: "on";
         readonly inlineBudget: 3000;
     };
-    readonly cacheWarming: "streaming";
+    readonly cacheWarming: "idle";
     readonly tuiMode: "fullscreen";
     readonly fullscreenExitOutput: "transcript";
     readonly fullscreenScrollbar: "auto";

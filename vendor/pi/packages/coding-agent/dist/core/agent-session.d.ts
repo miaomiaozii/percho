@@ -255,6 +255,7 @@ export declare class AgentSession {
     private _unsubscribeAgent?;
     private _eventListeners;
     private _isAgentRunActive;
+    private _promptPreflightCount;
     private _agentRunAbortRequested;
     private _idleWaitPromise;
     private _resolveIdleWait;
@@ -262,6 +263,8 @@ export declare class AgentSession {
     private _steeringMessages;
     /** Tracks pending follow-up messages for UI display. Removed when delivered. */
     private _followUpMessages;
+    /** Queued user messages whose images are normalized when they are delivered. */
+    private _queuedMessagesWithImages;
     /** Messages queued to be included with the next user prompt as context ("asides"). */
     private _pendingNextTurnMessages;
     /** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -342,14 +345,23 @@ export declare class AgentSession {
      * model. Under a virtual selection, that is the physical model that produced it.
      */
     private _modelForMessage;
-    /**
-     * Record the selection on the current branch when the branch implies another one, so a resume
-     * restores it. Tree navigation can leave the latest `model_change` on another branch; responses
-     * cannot record a virtual selection because they name physical models. Responses do record a
-     * physical selection unless the branch holds a virtual one; checking a physical selection against
-     * responses would record it on every prompt while `prepareRequest` redirects to another model.
-     */
+    /** Record the live model and thinking level on the current branch, so a resume restores them. */
     private _recordSelection;
+    /**
+     * Record the model on the current branch when the branch implies another one. Tree navigation
+     * can leave the latest `model_change` on another branch; responses cannot record a virtual
+     * selection because they name physical models. Responses do record a physical selection unless
+     * the branch holds a virtual one; checking a physical selection against responses would record
+     * it on every prompt while `prepareRequest` redirects to another model.
+     */
+    private _recordModelSelection;
+    /**
+     * Record the thinking level on the current branch when the branch implies another one (#11451).
+     * Tree navigation can leave the latest `thinking_level_change` on another branch. The recorded
+     * level is compared after clamping to the current model, so a level clamped on resume (e.g.
+     * `xhigh` running as `high`) is not recorded over the requested one.
+     */
+    private _recordThinkingLevel;
     /** The model whose limits apply to the conversation. */
     private _limitsModel;
     /**
@@ -589,6 +601,11 @@ export declare class AgentSession {
         preflightResult?: (disposition: "started") => void;
     }): Promise<void>;
     /**
+     * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+     * Returns the run trigger, or undefined when the prompt was handled or queued.
+     */
+    private _preparePrompt;
+    /**
      * Try to execute an extension command. Returns true if command was found and executed.
      */
     private _tryExecuteExtensionCommand;
@@ -632,6 +649,8 @@ export declare class AgentSession {
      * Internal: Queue a follow-up message (already expanded, no extension command check).
      */
     private _queueFollowUp;
+    /** Replace a queued user message's images in place with normalized ones, appending hints to its text. */
+    private _normalizeQueuedMessageImages;
     /**
      * Throw an error if the text is an extension command.
      */

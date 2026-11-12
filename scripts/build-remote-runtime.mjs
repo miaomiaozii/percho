@@ -20,7 +20,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import nodePolicy from "../packages/shared/src/runtime-node-policy.json" with { type: "json" };
 import { currentRelease } from "./release/plan.mjs";
-import { runtimeBuildAliases, runtimeBuildLock } from "./remote-runtime/production-lock.mjs";
+import {
+	RUNTIME_NPM_REGISTRY,
+	runtimeBuildAliases,
+	runtimeBuildLock,
+} from "./remote-runtime/production-lock.mjs";
 
 const exec = promisify(execFile),
 	repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -56,20 +60,39 @@ try {
 	);
 	await writeFile(join(stage, "package.json"), JSON.stringify(selected.manifest, null, 2));
 	await writeFile(join(stage, "package-lock.json"), JSON.stringify(selected.lock, null, 2));
-	// Local pi: the selected lock references the vendored (patched) packages via link entries.
-	await cp(join(repo, "vendor"), join(stage, "vendor"), { recursive: true });
-	// npm reads the on-disk package.json of file: targets and installs their
-	// devDependencies too; the stage lock is production-only, so strip dev
-	// deps from the staged vendor manifests to keep the ideal tree in sync.
-	for (const name of await readdir(join(stage, "vendor", "pi", "packages"))) {
-		const pj = join(stage, "vendor", "pi", "packages", name, "package.json");
-		const manifest = JSON.parse(await readFile(pj, "utf8"));
-		if (manifest.devDependencies) {
-			delete manifest.devDependencies;
-			await writeFile(pj, `${JSON.stringify(manifest, null, 2)}\n`);
+	// Two supported pi sources for the runtime stage: the vendored local-Pi tree
+	// (file: links, already carrying Percho's patches) or the published Pi 1.5.1
+	// packages from npm (patched afterwards with patch-package).
+	const vendoredPi = String(selected.manifest.dependencies?.["@earendil-works/pi-coding-agent"] ?? "").startsWith(
+		"file:",
+	);
+	if (vendoredPi) {
+		await cp(join(repo, "vendor"), join(stage, "vendor"), { recursive: true });
+		// npm reads the on-disk package.json of file: targets and installs their
+		// devDependencies too; the stage lock is production-only, so strip dev
+		// deps from the staged vendor manifests to keep the ideal tree in sync.
+		for (const name of await readdir(join(stage, "vendor", "pi", "packages"))) {
+			const pj = join(stage, "vendor", "pi", "packages", name, "package.json");
+			const manifest = JSON.parse(await readFile(pj, "utf8"));
+			if (manifest.devDependencies) {
+				delete manifest.devDependencies;
+				await writeFile(pj, `${JSON.stringify(manifest, null, 2)}\n`);
+			}
+		}
+	} else {
+		const patches = join(work, "patches");
+		await mkdir(patches);
+		for (const name of [
+			"@earendil-works+pi-agent-core+1.5.1.patch",
+			"@earendil-works+pi-coding-agent+1.5.1.patch",
+		]) {
+			await copyFile(join(repo, "patches", name), join(patches, name));
 		}
 	}
-	await run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
+	await run("npm", ["ci", `--registry=${RUNTIME_NPM_REGISTRY}`, "--ignore-scripts", "--no-audit", "--no-fund"]);
+	if (!vendoredPi) {
+		await run(process.execPath, [join(stage, "node_modules/patch-package/index.js"), "--patch-dir", "../patches"]);
+	}
 	const require = createRequire(join(stage, "package.json"));
 	const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);
 	await build({

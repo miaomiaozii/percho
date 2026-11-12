@@ -15,8 +15,8 @@ export declare function parseChangelog(changelogPath: string): ChangelogEntry[];
  */
 export declare function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number;
 /**
- * Get entries newer than lastVersion
+ * Get entries newer than lastVersion, or undefined when lastVersion has no major.minor.patch to compare against
  */
-export declare function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[];
+export declare function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] | undefined;
 export { getChangelogPath } from "../config.ts";
 //# sourceMappingURL=changelog.d.ts.map

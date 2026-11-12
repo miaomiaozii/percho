@@ -4,14 +4,15 @@
  * server is configured.
  */
 import { type AuthProvider, type CallToolResult, type ListResourcesResult, type ListResourceTemplatesResult, McpClient, type McpRequestOptions, type Tool as McpTool, type McpTransport, type ReadResourceResult, type Resource, type ResourceTemplate } from "@earendil-works/pi-mcp";
-import { type OAuthChallenge } from "@earendil-works/pi-mcp/oauth";
+import { type McpOAuthSettings, type OAuthChallenge } from "@earendil-works/pi-mcp/oauth";
 import type { McpServerEntry } from "./config.ts";
 import type { McpServerLog } from "./log.ts";
-import { type McpOAuthCredentialStore, type McpOAuthSettings } from "./oauth.ts";
+import { type McpOAuthCredentialStore } from "./oauth.ts";
 import type { McpResourceServer } from "./resources.ts";
 import type { McpToolCaller } from "./tools.ts";
+export { McpSignInCancelledError } from "@earendil-works/pi-mcp/oauth";
 export { McpServerLog } from "./log.ts";
-export { McpOAuthCredentialStore, McpSignInCancelledError, signInMcpServer } from "./oauth.ts";
+export { McpOAuthCredentialStore, signInMcpServer } from "./oauth.ts";
 /**
  * `disconnected`: the connection dropped (for example the stdio server exited); the next call
  * reconnects.

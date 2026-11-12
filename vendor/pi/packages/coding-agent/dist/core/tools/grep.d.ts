@@ -23,13 +23,15 @@ export interface GrepToolDetails {
 }
 /**
  * Pluggable operations for the grep tool.
- * Override these to delegate search to remote systems (for example SSH).
+ * The search itself always runs the local ripgrep; to search a remote system, override the tool's execute().
  */
 export interface GrepOperations {
     /** Check if path is a directory. Throws if path does not exist. */
     isDirectory: (absolutePath: string) => Promise<boolean> | boolean;
-    /** Read file contents for context lines */
-    readFile: (absolutePath: string) => Promise<string> | string;
+    /**
+     * @deprecated Ignored. Context lines come directly from ripgrep. Override the tool's execute() for remote search.
+     */
+    readFile?: (absolutePath: string) => Promise<string> | string;
 }
 export interface GrepToolOptions {
     /** Custom operations for grep. Default: local filesystem plus ripgrep */

@@ -22,4 +22,11 @@ export declare class OAuthRegistrationError extends Error {
 export declare class McpOAuthAuthorizationRequiredError extends Error {
     constructor();
 }
+/**
+ * Thrown by `McpOAuthServerStore.withRefreshLock()` when another process holds the refresh lock for the
+ * whole wait. `startMcpSignIn()` then skips the refresh and goes to the browser step.
+ */
+export declare class McpRefreshLockBusyError extends Error {
+    constructor();
+}
 //# sourceMappingURL=errors.d.ts.map

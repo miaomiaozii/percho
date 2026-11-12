@@ -11,7 +11,7 @@
  */
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { type CallToolResult, type ContentBlock, type McpRequestOptions, type Tool as McpTool } from "@earendil-works/pi-mcp";
+import { type CallToolResult, type ContentBlock, type McpOutputSaver, type McpRequestOptions, type Tool as McpTool } from "@earendil-works/pi-mcp";
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolExposure, ToolNamespace, ToolRenderers } from "../../core/extensions/types.ts";
 import { READ_MCP_RESOURCE_TOOL } from "../../core/mcp-servers.ts";
@@ -21,8 +21,6 @@ import type { McpExposure } from "./config.ts";
  * description; they differ only in which tool the MCP extension activates to reach them.
  */
 export declare function toToolExposure(exposure: McpExposure): ToolExposure;
-/** Model-facing text of an MCP result beyond this is cut in the middle. */
-export declare const MCP_OUTPUT_MAX_BYTES: number;
 /** Tool that reads the resources named by resource links. */
 export { READ_MCP_RESOURCE_TOOL };
 export interface McpToolDetails {
@@ -31,35 +29,16 @@ export interface McpToolDetails {
     /** Temp file with the full text output, when the model-facing text was truncated. */
     fullOutputPath?: string;
 }
-/**
- * Saves the full text of a truncated result, or a binary resource, and returns the file path.
- * `extension` includes the dot, for example `.txt`.
- */
-export type McpOutputSaver = (data: string | Uint8Array, extension: string) => Promise<string>;
+/** Saves the full text of a truncated result, or a binary resource, to a temp file and returns its path. */
 export declare function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string>;
 export interface McpToolCaller {
     callTool(name: string, args: Record<string, unknown>, options: McpRequestOptions): Promise<CallToolResult>;
 }
 /**
- * `mcp__<server>__<tool>`, sanitized and shortened with a hash suffix when too long. Like Codex,
- * everything but `[A-Za-z0-9_]` becomes `_`, so the name is also the identifier codemode scripts
- * call it by. `isTaken` reports names used by a different MCP tool: sanitizing can map two tools to
- * one name (`a-b` and `a_b`), which then get the hash suffix.
- */
-export declare function createMcpToolName(server: string, tool: string, isTaken?: (name: string) => boolean): string;
-/**
  * Output schema of every MCP tool: the `CallToolResult` scripts receive (without `_meta`, which
  * {@link convertMcpResult} drops), with the tool's own output schema as `structuredContent`.
  */
 export declare function createMcpResultSchema(structuredContentSchema: Record<string, unknown> | undefined): TSchema;
-/**
- * Keep model-facing text within {@link MCP_OUTPUT_MAX_BYTES}. Longer text becomes one text block in
- * Codex's truncation format, followed by the path of the file with the full text; images follow it.
- */
-export declare function limitMcpContent(content: (TextContent | ImageContent)[], saveOutput?: McpOutputSaver): Promise<{
-    content: (TextContent | ImageContent)[];
-    fullOutputPath?: string;
-}>;
 export interface ConvertMcpResultOptions {
     /** Saves truncated text and binary resources. Default: a temp file. */
     saveOutput?: McpOutputSaver;

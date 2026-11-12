@@ -66,7 +66,7 @@ declare const APP_KEYBINDINGS: {
         readonly description: "Restore queued messages";
     };
     readonly "app.clipboard.pasteImage": {
-        readonly defaultKeys: "alt+v" | "ctrl+v";
+        readonly defaultKeys: "ctrl+v" | ("alt+v" | "ctrl+v")[];
         readonly description: "Paste files on macOS, images, or text from clipboard";
     };
     readonly "app.session.new": {
@@ -420,7 +420,7 @@ export declare const KEYBINDINGS: {
         readonly description: "Restore queued messages";
     };
     readonly "app.clipboard.pasteImage": {
-        readonly defaultKeys: "alt+v" | "ctrl+v";
+        readonly defaultKeys: "ctrl+v" | ("alt+v" | "ctrl+v")[];
         readonly description: "Paste files on macOS, images, or text from clipboard";
     };
     readonly "app.session.new": {

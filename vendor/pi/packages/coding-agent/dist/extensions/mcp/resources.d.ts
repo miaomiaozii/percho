@@ -9,7 +9,7 @@
  * interfaces for hosts that render them, and so are icons. Read resources become text and images for
  * the model; binary resources are saved to temp files. Scripts get the JSON payloads.
  */
-import type { ListResourcesResult, ListResourceTemplatesResult, McpRequestOptions, ReadResourceResult, Resource, ResourceTemplate } from "@earendil-works/pi-mcp";
+import { type ListResourcesResult, type ListResourceTemplatesResult, type McpRequestOptions, type ReadResourceResult, type Resource, type ResourceTemplate } from "@earendil-works/pi-mcp";
 import type { TSchema } from "typebox";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
 import { LIST_MCP_RESOURCE_TEMPLATES_TOOL, LIST_MCP_RESOURCES_TOOL, READ_MCP_RESOURCE_TOOL } from "../../core/mcp-servers.ts";

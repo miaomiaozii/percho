@@ -1,4 +1,6 @@
 import type { SettingsManager } from "./settings-manager.ts";
+/** Whether PI_OFFLINE is set; package installs and updates then skip all network access. */
+export declare function isOfflineModeEnabled(): boolean;
 export interface PathMetadata {
     source: string;
     scope: SourceScope;
@@ -28,7 +30,13 @@ export interface PackageInstallFailure {
 }
 export type MissingSourceAction = "install" | "skip" | "error";
 export interface ProgressEvent {
-    type: "start" | "progress" | "complete" | "error";
+    /**
+     * `start` is followed by exactly one `complete` or `error` for the same source.
+     * `progress` carries an intermediate message or warning.
+     * `result` reports an outcome outside that pairing, e.g. one changed package
+     * after update(): `npm:foo 1.2.0 -> 1.3.0`.
+     */
+    type: "start" | "progress" | "complete" | "error" | "result";
     action: "install" | "remove" | "update" | "clone" | "pull";
     source: string;
     message?: string;
@@ -123,6 +131,7 @@ export declare class DefaultPackageManager implements PackageManager {
     }): Promise<boolean>;
     update(source?: string): Promise<void>;
     private updateConfiguredSources;
+    private getGitHead;
     private shouldUpdateNpmSource;
     private updateNpmBatch;
     /**

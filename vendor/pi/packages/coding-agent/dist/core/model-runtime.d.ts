@@ -92,6 +92,11 @@ export declare class ModelRuntime implements Models {
     private synchronizeCredentialState;
     setRuntimeApiKey(providerId: string, apiKey: string, options?: AuthOperationOptions): Promise<void>;
     removeRuntimeApiKey(providerId: string, options?: AuthOperationOptions): Promise<void>;
+    /**
+     * Wait until credential writes already in progress finish, such as an OAuth refresh started by a
+     * background catalog refresh. Call before the process exits so a rotated token is not lost.
+     */
+    settleCredentialWrites(): Promise<void>;
     listCredentials(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]>;
     getProviderAuthStatus(providerId: string): AuthStatus;
     private prepareRequest;

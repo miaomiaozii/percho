@@ -49,6 +49,16 @@ export interface OAuthFlowOptions {
      * server asks for scopes the current grant lacks (a refresh keeps the old scope).
      */
     skipRefresh?: boolean;
+    /**
+     * Only refresh the stored tokens: return `REDIRECT` instead of registering a client or preparing an
+     * authorization request, so a pending authorization (its `state` and PKCE verifier) stays usable.
+     */
+    refreshOnly?: boolean;
+    /**
+     * With `authorizationCode`: the redirect URI the authorization request used. The exchange fails before
+     * sending the code when the flow would send another one (RFC 6749 section 4.1.3 requires the same).
+     */
+    authorizationRedirectUrl?: string;
 }
 export type OAuthFlowResult = "AUTHORIZED" | "REDIRECT";
 export interface TokenRequestOptions {

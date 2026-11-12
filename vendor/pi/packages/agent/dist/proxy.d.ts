@@ -55,7 +55,7 @@ export type ProxyAssistantMessageEvent = {
     usage: AssistantMessage["usage"];
     providerThinkingLevel?: string;
 };
-type ProxySerializableStreamOptions = Pick<SimpleStreamOptions, "temperature" | "samplingParams" | "maxTokens" | "reasoning" | "cacheRetention" | "sessionId" | "headers" | "metadata" | "transport" | "thinkingBudgets" | "maxRetryDelayMs">;
+type ProxySerializableStreamOptions = Pick<SimpleStreamOptions, "temperature" | "samplingParams" | "maxTokens" | "reasoning" | "cacheRetention" | "sessionId" | "disableContinuation" | "headers" | "metadata" | "transport" | "thinkingBudgets" | "maxRetryDelayMs">;
 export interface ProxyStreamOptions extends ProxySerializableStreamOptions {
     /** Local abort signal for the proxy request */
     signal?: AbortSignal;

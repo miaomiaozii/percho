@@ -1,9 +1,14 @@
 /**
  * Shared diff computation utilities for the edit and similar tools.
  */
-export declare function detectLineEnding(content: string): "\r\n" | "\n";
 export declare function normalizeToLF(text: string): string;
-export declare function restoreLineEndings(text: string, ending: "\r\n" | "\n"): string;
+/**
+ * Apply replacements matched in `normalizeToLF(originalContent)` to `originalContent` itself.
+ * Text outside the replaced ranges keeps its bytes, including its line endings. Line breaks in
+ * the new text get the line ending of the line where the replaced range starts. The result,
+ * normalized to LF, equals the replacements applied to the normalized content.
+ */
+export declare function applyReplacementsToOriginal(originalContent: string, replacements: TextReplacement[]): string;
 /**
  * Normalize text for fuzzy matching. Applies progressive transformations:
  * - Strip trailing whitespace from each line
@@ -18,18 +23,8 @@ interface MatchedEdit {
     matchLength: number;
     newText: string;
 }
-type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
-/**
- * Apply replacements matched against `baseContent` to `originalContent` while
- * preserving unchanged line blocks from the original.
- *
- * This is useful when `baseContent` is a normalized view of the original. Each
- * replacement is widened to the lines it actually touches, those touched lines
- * are rewritten from the normalized base, and all other lines are copied back
- * from `originalContent`. The actual replacement ranges drive preservation so
- * duplicate normalized lines cannot be aligned to the wrong occurrence.
- */
-export declare function applyReplacementsPreservingUnchangedLines(originalContent: string, baseContent: string, replacements: TextReplacement[]): string;
+/** Replacement of `matchLength` characters at `matchIndex` with `newText`. */
+export type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
 export interface FuzzyMatchResult {
     /** Whether a match was found */
     found: boolean;
@@ -52,6 +47,8 @@ export interface Edit {
 export interface AppliedEditsResult {
     baseContent: string;
     newContent: string;
+    /** Sorted replacements of `baseContent` that turn it into `newContent` */
+    replacements: TextReplacement[];
 }
 /**
  * Find oldText in content, trying exact match first, then fuzzy match.
@@ -80,6 +77,18 @@ export declare function generateDiffString(oldContent: string, newContent: strin
     diff: string;
     firstChangedLine: number | undefined;
 };
+/** Display diff and unified patch of an edit, as returned in the edit tool's details. */
+export interface EditDiff {
+    diff: string;
+    patch: string;
+    firstChangedLine: number | undefined;
+}
+/**
+ * Diff an edit only around its replacements, so time and memory follow the size of the change instead of
+ * the file. The result matches generateDiffString and generateUnifiedPatch over the whole contents, except
+ * that jsdiff may align runs of repeated lines differently within a window.
+ */
+export declare function generateEditDiff(path: string, baseContent: string, newContent: string, replacements: TextReplacement[], contextLines?: number): EditDiff;
 export interface EditDiffResult {
     diff: string;
     firstChangedLine: number | undefined;

@@ -84,6 +84,8 @@ export declare class InteractiveMode {
     private changelogMarkdown;
     private extensionChangelogUpdates;
     private startupNoticesShown;
+    /** Last cache-warming notice, extended in place while it is the last chat line. */
+    private cacheWarmingNotice;
     private anthropicSubscriptionWarningShown;
     private lastStatusSpacer;
     private lastStatusText;
@@ -113,6 +115,13 @@ export declare class InteractiveMode {
     private bugReportHintShown;
     private installChangeWarningShown;
     private extensionDialogs;
+    /** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
+    private nextBlockingOverlayId;
+    /**
+     * Open extension overlays (custom with overlay: true) and the function that removes each, in opening
+     * order. Reset removes only these, not pi's own overlays.
+     */
+    private readonly extensionOverlays;
     private extensionTerminalInputSubscriptions;
     private extensionWidgetsAbove;
     private extensionWidgetsBelow;
@@ -222,6 +231,8 @@ export declare class InteractiveMode {
      */
     private getRegisteredToolDefinition;
     private getMarkdownTransformers;
+    /** Markdown of a changelog or release note that runs the Markdown transformers of the `changelog` type. */
+    private createChangelogMarkdown;
     /**
      * Set up keyboard shortcuts registered by extensions.
      */
@@ -442,7 +453,6 @@ export declare class InteractiveMode {
     private handleResumeSession;
     private getLoginProviderOptions;
     private getLogoutProviderOptions;
-    private findLoginProviderOptions;
     private handleLoginCommand;
     /** `onBack` reopens the selector the login was started from when the user cancels it. */
     private startProviderLogin;

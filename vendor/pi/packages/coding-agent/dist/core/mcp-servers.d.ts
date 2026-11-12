@@ -3,7 +3,10 @@
  *
  * The core only validates and stores registrations. The MCP extension (built in, or another
  * extension that handles `mcp_servers_change`) connects them next to the servers from `mcp.json`.
+ * The `mcpServers` shape itself (stdio and HTTP fields, `oauth`, `enabled`, `description`, `timeout`)
+ * is pi-mcp's; this file adds pi's fields to it.
  */
+import { type McpHttpServerConfig as McpHttpServerFields, type McpOAuthConfig as McpOAuthFields, type McpStdioServerConfig as McpStdioServerFields } from "@earendil-works/pi-mcp";
 /** Whether a tool name matches any of the entries, each an exact name or a pattern. */
 export declare function createToolNameMatcher(entries: readonly string[]): (name: string) => boolean;
 /** MCP resource tools, which reach every server with resources. */
@@ -22,6 +25,10 @@ export declare function isMcpToolName(name: string): boolean;
  * - `hidden`: tools are registered but unreachable.
  */
 export type McpExposure = "codemode" | "deferred" | "direct" | "hidden";
+/**
+ * pi's fields of every server entry, beside the shared `mcpServers` fields of pi-mcp. `description`
+ * and `timeout` are shared fields, declared again for pi's documentation.
+ */
 interface McpServerConfigBase {
     /** Default: `codemode`. */
     exposure?: McpExposure;
@@ -37,39 +44,19 @@ interface McpServerConfigBase {
      * overrides for a few tools exposes only those.
      */
     toolExposure?: Record<string, McpExposure>;
-    /** Set to false to keep the entry without connecting. Default: true. */
-    enabled?: boolean;
     /** Per-request timeout in seconds. Progress notifications from the server reset it. Default: 60. */
     timeout?: number;
 }
-export interface McpStdioServerConfig extends McpServerConfigBase {
-    type?: "stdio";
-    command: string;
-    args?: string[];
+export interface McpStdioServerConfig extends McpStdioServerFields, McpServerConfigBase {
     /** Values may reference environment variables (`${NAME}`) or commands (`!cmd`). */
     env?: Record<string, string>;
     /** Relative paths resolve against the session working directory. */
     cwd?: string;
 }
 /** OAuth client settings for servers that do not support dynamic client registration. */
-export interface McpOAuthConfig {
-    /** Pre-registered client id. Without it, pi registers a client with the authorization server. */
-    clientId?: string;
+export interface McpOAuthConfig extends McpOAuthFields {
     /** May reference environment variables (`${NAME}`) or commands (`!cmd`). */
     clientSecret?: string;
-    /**
-     * Port of the loopback callback server, for clients registered with a fixed redirect URI. Without
-     * `callbackUrl`, the redirect URI is `http://127.0.0.1:<port>/callback`.
-     */
-    callbackPort?: number;
-    /**
-     * Redirect URI registered for `clientId`, for example `http://localhost:8080/oauth/callback`. It must
-     * be an `http` URI on `localhost`, `127.0.0.1`, or `[::1]`. Without a port, the callback server
-     * listens on `callbackPort` or a free port, which is added to the URI (RFC 8252).
-     */
-    callbackUrl?: string;
-    /** Scopes to request, separated by spaces. Default: the scopes the server advertises. */
-    scope?: string;
     /**
      * `client_name` sent with dynamic client registration, for servers that only accept known clients.
      * Default: `pi`.
@@ -83,23 +70,13 @@ export interface McpOAuthConfig {
      * `dcr`: always dynamic client registration.
      */
     clientRegistration?: "auto" | "dcr" | "cimd";
-    /**
-     * Authorization server metadata document (RFC 8414 or OpenID Connect discovery) to use instead of
-     * discovery through the server, for servers that advertise a wrong authorization server or none.
-     * The document is trusted as configured. Must use https, except on loopback hosts.
-     */
-    authServerMetadataUrl?: string;
 }
-/** Whether a redirect URI can be served by pi's loopback callback server. */
-export declare function isLoopbackRedirectUri(value: string): boolean;
 /**
  * Whether pi's Client ID Metadata Documents list a redirect URI for the loopback `callbackUrl`: they list
  * `/callback` on localhost and 127.0.0.1, on any port. Without `callbackUrl`, pi uses such a URI.
  */
 export declare function isClientMetadataDocumentCallback(callbackUrl: string | undefined): boolean;
-export interface McpHttpServerConfig extends McpServerConfigBase {
-    type?: "http";
-    url: string;
+export interface McpHttpServerConfig extends McpHttpServerFields, McpServerConfigBase {
     /** Values may reference environment variables (`${NAME}`) or commands (`!cmd`). */
     headers?: Record<string, string>;
     oauth?: McpOAuthConfig;
@@ -112,13 +89,11 @@ export interface McpHttpServerConfig extends McpServerConfigBase {
     };
 }
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
-/** Namespace of a server's tools: `mcp__<server>` with `-` replaced by `_`, like the tool names. */
-export declare function mcpNamespace(server: string): string;
 /** Exposure of one tool of a server: its `toolExposure` entry, else the server's `exposure`. */
 export declare function getMcpToolExposure(config: McpServerConfig, toolName: string): McpExposure;
 /**
- * Validate one server entry of the `mcpServers` shape. Returns a copy of the config with exposure
- * aliases resolved, or an error message.
+ * Validate one server entry of the `mcpServers` shape: pi-mcp's shared fields and pi's own. Returns a
+ * copy of the config with exposure aliases resolved, or an error message.
  */
 export declare function validateMcpServerConfig(name: string, raw: unknown): McpServerConfig | string;
 /** A server an extension registered with `pi.registerMcpServer()`. */

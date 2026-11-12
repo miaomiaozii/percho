@@ -40,4 +40,9 @@ export declare function renderToolOutputType(schema: CodemodeJsonSchema | undefi
 export declare function schemaToType(schema: CodemodeJsonSchema, options?: {
     maxChars?: number;
 }): string;
+/**
+ * The subschema a local `$ref` (`#`, `#/$defs/Item`) names in `root`, or undefined for remote references and
+ * references that name nothing. Pointer segments are URI-decoded and JSON Pointer unescaped (`~1` is `/`, `~0` is `~`).
+ */
+export declare function resolveSchemaRef(ref: string, root: unknown): CodemodeJsonSchema | undefined;
 //# sourceMappingURL=declarations.d.ts.map

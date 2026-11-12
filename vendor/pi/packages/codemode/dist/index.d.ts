@@ -1,4 +1,4 @@
-export { DEFAULT_INPUT_SCHEMA_MAX_CHARS, type RenderDeclarationsOptions, renderDeclarations, renderToolOutputType, renderToolSample, renderToolSignature, schemaToType, } from "./declarations.ts";
+export { DEFAULT_INPUT_SCHEMA_MAX_CHARS, type RenderDeclarationsOptions, renderDeclarations, renderToolOutputType, renderToolSample, renderToolSignature, resolveSchemaRef, schemaToType, } from "./declarations.ts";
 export { toCodemodeIdentifier } from "./identifier.ts";
 export { CodemodeSandboxBase } from "./runtime/execution.ts";
 export { CodemodeSandbox } from "./runtime/host.ts";
