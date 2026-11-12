@@ -10,6 +10,7 @@
 //   npx tsx scripts/smoke-channel-watch.mts v3     # appendEntry 持久化读回（真实模型）
 //   npx tsx scripts/smoke-channel-watch.mts v7     # 订阅快照上报 + GC intent 守卫（无模型）
 //   npx tsx scripts/smoke-channel-watch.mts v8     # 关闭重开补投一次、不重复（无模型）
+//   npx tsx scripts/smoke-channel-watch.mts v9     # 两会话经 PiBackend 真链路协作（真实模型）
 //   npx tsx scripts/smoke-channel-watch.mts all    # 按依赖序全跑（含 v7/v8）
 // 仅使用 dev agent 目录（~/.percho/agent-dev），正式目录零写入。
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -50,6 +51,9 @@ function pickModel(runtime: InstanceType<typeof ModelRuntime>, spec: string) {
 	if (!model) throw new Error(`model not found: ${spec}`);
 	return model;
 }
+
+/** 冒烟用模型：Pi 目录里的 id 会随版本漂移（1.5.x 已无 deepseek-v4-flash），用 env 覆盖 */
+const MODEL_SPEC = process.env.PERCHO_SMOKE_MODEL ?? "deepseek/deepseek-flash";
 
 // ---------- V7/V8 共用：PiBackend / channel-watch 扩展 ----------
 
@@ -136,7 +140,7 @@ async function openWatchedSession(opts: {
 	const result = await createAgentSession({
 		cwd: opts.project,
 		modelRuntime: opts.runtime,
-		model: pickModel(opts.runtime, "deepseek/deepseek-v4-flash"),
+		model: pickModel(opts.runtime, MODEL_SPEC),
 		tools: undefined,
 		sessionManager,
 		settingsManager,
@@ -208,7 +212,7 @@ async function makeSession(
 ): Promise<SmokeSession & { loader: InstanceType<typeof DefaultResourceLoader> }> {
 	// tools 传 undefined = 正式桌面路径：无白名单，扩展工具自动激活
 	const tempRoot = await mkdtemp(join("/tmp", "percho-smoke-cw-"));
-	const model = pickModel(runtime, options?.modelSpec ?? "deepseek/deepseek-v4-flash");
+	const model = pickModel(runtime, MODEL_SPEC);
 	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const loader = new DefaultResourceLoader({
 		cwd,
@@ -522,7 +526,7 @@ async function phaseV3(runtime: InstanceType<typeof ModelRuntime>) {
 		const result = await createAgentSession({
 			cwd,
 			modelRuntime: runtime,
-			model: pickModel(runtime, "deepseek/deepseek-v4-flash"),
+			model: pickModel(runtime, MODEL_SPEC),
 			tools: undefined,
 			sessionManager,
 			resourceLoader: loader,
@@ -676,6 +680,84 @@ async function phaseV8(runtime: InstanceType<typeof ModelRuntime>) {
 	}
 }
 
+// ---------- V9：两个真会话通过 PiBackend 真链路互相协作（真实模型驱动订阅/发消息/唤醒） ----------
+
+async function phaseV9(runtime: InstanceType<typeof ModelRuntime>) {
+	void runtime;
+	const root = await mkdtemp(join(tmpdir(), "percho-smoke-cw-v9-"));
+	const project = join(root, "project");
+	const sessionsDir = join(root, "sessions");
+	try {
+		await mkdir(project, { recursive: true });
+		await mkdir(sessionsDir, { recursive: true });
+		const backend = new PiBackend({ defaultCwd: project, projectTrust: false, permissionExtension: false });
+		await backend.init();
+		const settleBySession = new Map<string, string[]>();
+		const off = backend.onEvent((sessionId, event) => {
+			const seq = settleBySession.get(sessionId) ?? [];
+			seq.push((event as { type?: string }).type ?? "?");
+			settleBySession.set(sessionId, seq);
+		});
+		const waitSettled = async (sessionId: string, expect: number, timeoutMs: number): Promise<boolean> =>
+			waitUntil(() => (settleBySession.get(sessionId) ?? []).filter((t) => t === "agent_settled").length >= expect, timeoutMs);
+		try {
+			const mk = async (): Promise<{ id: string; file: string }> => {
+				const id = randomUUID();
+				const file = join(sessionsDir, `${id}.jsonl`);
+				await writeFile(
+					file,
+					JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: project }) + "\n",
+					"utf8",
+				);
+				const meta = await backend.openSession(file);
+				await backend.setModel(meta.sessionId, "deepseek", MODEL_SPEC.split("/")[1]);
+				return { id: meta.sessionId, file };
+			};
+			const a = await mk();
+			const b = await mk();
+			console.log(`[V9] 两会话就绪 A=${a.id.slice(0, 8)} B=${b.id.slice(0, 8)} project=${project}`);
+
+			// A 订阅
+			await backend.prompt(
+				a.id,
+				"请立即调用 channel_subscribe 工具订阅频道 demo（不要问我确认），然后只回复 OK。",
+			);
+			if (!(await waitSettled(a.id, 1, 120_000))) throw new Error("V9: A 订阅回合未在 120s 内完成");
+			const subsA = await lastSubsPayload(a.file);
+			if (!subsA.topics.includes("demo")) throw new Error(`V9: A 未真正订阅：${JSON.stringify(subsA)}`);
+			console.log(`[V9] A 订阅落盘: ${JSON.stringify(subsA.topics)}`);
+
+			// B 发消息（不订阅，纯对端）
+			await backend.prompt(
+				b.id,
+				'请立即调用 channel_post 工具向频道 demo 发送消息，message 内容固定为：“阶段1完成，等你接手”。不要问我确认，然后只回复 OK。',
+			);
+			if (!(await waitSettled(b.id, 1, 120_000))) throw new Error("V9: B 发消息回合未在 120s 内完成");
+			const messages = join(project, ".local", "agent-work", "channel", "demo", "MESSAGES.md");
+			const posted = await readFile(messages, "utf8");
+			if (!posted.includes("阶段1完成，等你接手")) throw new Error(`V9: 频道文件未落盘：${posted}`);
+			console.log(`[V9] B 已落盘频道消息（${posted.length} 字符）`);
+
+			// A 被唤醒（watcher 防抖 3s + 一轮模型回合）并自行查收
+			if (!(await waitSettled(a.id, 2, 120_000))) throw new Error("V9: A 未被唤醒（120s 内无第二回合）");
+			const aLog = await readFile(a.file, "utf8");
+			const wakeLines = aLog.split("\n").filter((l) => l.includes("[channel:demo]"));
+			if (wakeLines.length !== 1) throw new Error(`V9: 唤醒消息应恰好一条，实测 ${wakeLines.length}`);
+			if (!aLog.includes("MESSAGES.md")) throw new Error("V9: A 唤醒后未读频道 MESSAGES.md");
+			const seqA = settleBySession.get(a.id) ?? [];
+			console.log(`[V9] A 事件: ${seqA.filter((t) => t === "agent_settled").length} 次 settled；唤醒入史=1；已读频道文件=true`);
+			const finalText = (await backend.peekSessionMessages(a.id))?.at(-1);
+			console.log(`[V9] A 收尾回复: ${JSON.stringify((finalText?.content ?? "").slice(0, 120))}`);
+			console.log("[V9] PASS: 订阅 → 对端 post → 唤醒入史 → 自行查收（生产 PiBackend 链路、真实模型）");
+		} finally {
+			off();
+			backend.dispose();
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -684,6 +766,11 @@ async function main() {
 	if (phase === "v5") return phaseV5();
 	if (phase === "v7") return phaseV7();
 	const runtime = await setup();
+	if (phase === "v9") {
+		await phaseV9(runtime);
+		console.log("\nSMOKE CHANNEL-WATCH: ALL GREEN");
+		return;
+	}
 	try {
 		if (phase === "v8") await phaseV8(runtime);
 		else if (phase === "v6") await phaseV6(runtime);
@@ -699,6 +786,7 @@ async function main() {
 			await phaseV1(runtime);
 			await phaseV2(runtime);
 			await phaseV3(runtime);
+			await phaseV9(runtime);
 		} else {
 			throw new Error(`unknown phase: ${phase}`);
 		}
