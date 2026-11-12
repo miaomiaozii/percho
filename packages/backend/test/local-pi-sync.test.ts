@@ -126,7 +126,7 @@ describe("resolveLocalPiSource", () => {
 			// 与目标重合的候选必须被排除（不能自己拷自己）；返回的只会是其他候选或 null。
 			const resolved = await resolveLocalPiSource(source);
 			expect(resolved).not.toBe(source);
-			expect(resolved).not.toContain("local-pi-sync-test");
+			expect(String(resolved ?? "")).not.toContain("local-pi-sync-test");
 		});
 	});
 
