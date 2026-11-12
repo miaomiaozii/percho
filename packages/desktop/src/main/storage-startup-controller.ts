@@ -74,16 +74,6 @@ export class StorageStartupController {
 			});
 			this.selection = await validateStorageSelection(this.options.selection);
 			process.env.PI_CODING_AGENT_DIR = this.selection.target;
-			// 模型/凭据跟随本地 Pi：每次启动把更新的 models.json / auth.json 同步进来（尽力而为）。
-			try {
-				const source = await resolveLocalPiSource(this.selection.target);
-				if (source) {
-					const { copied } = await syncLocalPiCredentials(source, this.selection.target);
-					if (copied.length > 0) console.log(`[local-pi-sync] ${copied.join(", ")}`);
-				}
-			} catch (error) {
-				console.warn("[local-pi-sync]", error);
-			}
 			const inspection = await inspectLocalStorage(this.selection, {
 				signal: this.abort?.signal,
 				onProgress: (p) => this.progress(p),
@@ -161,6 +151,19 @@ export class StorageStartupController {
 	private async finish(record: LocalStorageRecord) {
 		this.update({ phase: "preferences" });
 		await migrateNavigation(this.options.userData, record);
+		if (this.exiting) return;
+		// 模型/凭据跟随本地 Pi：必须在存储判定与迁移完成之后再覆盖，否则新写入的
+		// models.json / auth.json 会被存储检查当成已有 Pi 数据，打断接管/导入流程。
+		try {
+			const target = this.selection?.target;
+			const source = target ? await resolveLocalPiSource(target) : null;
+			if (target && source) {
+				const { copied } = await syncLocalPiCredentials(source, target);
+				if (copied.length > 0) console.log(`[local-pi-sync] ${copied.join(", ")}`);
+			}
+		} catch (error) {
+			console.warn("[local-pi-sync]", error);
+		}
 		if (this.exiting) return;
 		this.update({ phase: "ready" });
 		this.options.onReady(record, this.selection as LocalStorageSelection);
