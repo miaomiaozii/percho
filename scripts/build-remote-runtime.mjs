@@ -63,9 +63,9 @@ try {
 	// Two supported pi sources for the runtime stage: the vendored local-Pi tree
 	// (file: links, already carrying Percho's patches) or the published Pi 1.5.1
 	// packages from npm (patched afterwards with patch-package).
-	const vendoredPi = String(selected.manifest.dependencies?.["@earendil-works/pi-coding-agent"] ?? "").startsWith(
-		"file:",
-	);
+	const vendoredPi = String(
+		selected.manifest.dependencies?.["@earendil-works/pi-coding-agent"] ?? "",
+	).startsWith("file:");
 	if (vendoredPi) {
 		await cp(join(repo, "vendor"), join(stage, "vendor"), { recursive: true });
 		// npm reads the on-disk package.json of file: targets and installs their
@@ -89,9 +89,19 @@ try {
 			await copyFile(join(repo, "patches", name), join(patches, name));
 		}
 	}
-	await run("npm", ["ci", `--registry=${RUNTIME_NPM_REGISTRY}`, "--ignore-scripts", "--no-audit", "--no-fund"]);
+	await run("npm", [
+		"ci",
+		`--registry=${RUNTIME_NPM_REGISTRY}`,
+		"--ignore-scripts",
+		"--no-audit",
+		"--no-fund",
+	]);
 	if (!vendoredPi) {
-		await run(process.execPath, [join(stage, "node_modules/patch-package/index.js"), "--patch-dir", "../patches"]);
+		await run(process.execPath, [
+			join(stage, "node_modules/patch-package/index.js"),
+			"--patch-dir",
+			"../patches",
+		]);
 	}
 	const require = createRequire(join(stage, "package.json"));
 	const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);

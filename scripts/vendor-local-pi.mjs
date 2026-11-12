@@ -254,7 +254,9 @@ async function main() {
 	for (const line of patchFailures) console.log(`  ${line}`);
 	const failed = patchFailures.filter((line) => line.includes(" FAILED"));
 	if (failed.length > 0) {
-		console.error(`Vendor patching incomplete: ${failed.length} hunk(s) failed. Fix the patches or update them for this Pi version.`);
+		console.error(
+			`Vendor patching incomplete: ${failed.length} hunk(s) failed. Fix the patches or update them for this Pi version.`,
+		);
 		process.exit(1);
 	}
 	// Copy patched dist back into the vendored packages.

@@ -7,6 +7,12 @@ export const RUNTIME_NPM_REGISTRY = "https://registry.npmjs.org";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/** Where local Pi lives in this repo, and the npm names it is installed under. */
+const PI_VENDOR_DIRS = {
+	"@earendil-works/pi-coding-agent": "vendor/pi/packages/coding-agent",
+	"@earendil-works/pi-ai": "vendor/pi/packages/ai",
+};
+
 /** Vendor link entries (local pi) carry no version/deps in the lock; read the real manifest. */
 function vendorManifest(entry) {
 	if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
@@ -16,14 +22,31 @@ function vendorManifest(entry) {
 
 /** Select exact installed lock entries, without introducing another dependency/version solver. */
 export function runtimeBuildLock(lock, version) {
-	// The committed repo lock installs pi as file: links into vendor/pi/packages;
-	// the stage manifest must use the same file: specs so npm ci materializes
-	// real (non-symlink) copies of the vendored, patched pi packages.
-	const dependencies = {
-		"@earendil-works/pi-coding-agent": "file:vendor/pi/packages/coding-agent",
-		"@earendil-works/pi-ai": "file:vendor/pi/packages/ai",
-	};
+	// Pi arrives in two shapes, and the stage manifest must match the committed lock:
+	//   - local Pi (this fork's default): pi is installed as file: links into
+	//     vendor/pi/packages; those on-disk manifests already carry Percho's Pi patches
+	//     (scripts/vendor-local-pi.mjs), so the stage re-uses the same file: specs and
+	//     npm ci materializes real copies of them.
+	//   - published Pi from npm: pin the version the lock resolved, and patch-package
+	//     applies the Pi patches during the stage install.
+	const dependencies = {};
 	const devDependencies = { esbuild: "0.25.12" };
+	const vendoredPi = {};
+	for (const [name, vendorDir] of Object.entries(PI_VENDOR_DIRS)) {
+		const alias = lock.packages[`node_modules/${name}`];
+		if (alias?.link === true && alias.resolved === vendorDir) {
+			dependencies[name] = `file:${vendorDir}`;
+			vendoredPi[name] = vendorDir;
+			continue;
+		}
+		if (typeof alias?.version !== "string") {
+			throw new Error(
+				`Cannot resolve ${name} in the committed lock: neither a vendor link nor a registry version`,
+			);
+		}
+		dependencies[name] = alias.version;
+		devDependencies["patch-package"] = "8.0.1";
+	}
 	const packages = {};
 	const production = new Set();
 	const locate = (parent, name, optional = false) => {
@@ -93,7 +116,7 @@ export function runtimeBuildLock(lock, version) {
 		// The file: alias resolves to a vendor directory whose on-disk manifest
 		// drives the install; lock that directory (and its own deps) too.
 		const dirKey = lock.packages[key]?.resolved;
-		if (dirKey) visit(dirKey, true);
+		if (typeof dirKey === "string" && dirKey.startsWith("vendor/pi/packages/")) visit(dirKey, true);
 		visit(key, true);
 	}
 	for (const name of Object.keys(devDependencies)) visit(locate("", name), false);
@@ -120,18 +143,20 @@ export function runtimeBuildLock(lock, version) {
 		delete directory.devDependencies;
 		packages[entry.resolved] = directory;
 	}
-	const expectedVendor = {
-		"@earendil-works/pi-coding-agent": ["vendor/pi/packages/coding-agent", "1.5.0"],
-		"@earendil-works/pi-ai": ["vendor/pi/packages/ai", "1.5.0"],
-	};
-	for (const [name, [vendorPath, expectedVersion]] of Object.entries(expectedVendor)) {
+	const vendoredVersions = new Set();
+	for (const [name, vendorPath] of Object.entries(vendoredPi)) {
 		const entry = packages[`node_modules/${name}`];
 		if (entry?.link !== true || entry?.resolved !== vendorPath) {
 			throw new Error(`Runtime lock mismatch for ${name}: expected file link to ${vendorPath}`);
 		}
-		if (vendorManifest(entry)?.version !== expectedVersion) {
-			throw new Error(`Runtime lock mismatch for ${name}`);
+		const version = vendorManifest(entry)?.version;
+		if (typeof version !== "string") {
+			throw new Error(`Runtime lock mismatch for ${name}: vendored manifest has no version`);
 		}
+		vendoredVersions.add(version);
+	}
+	if (vendoredVersions.size > 1) {
+		throw new Error(`Vendored Pi versions disagree: ${[...vendoredVersions].sort().join(", ")}`);
 	}
 	const typebox =
 		lock.packages["packages/backend/node_modules/typebox"] ?? lock.packages["node_modules/typebox"];

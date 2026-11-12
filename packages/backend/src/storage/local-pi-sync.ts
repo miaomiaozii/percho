@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, readdir, rename, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import type { LocalPiSyncProject, LocalPiSyncProjects, LocalPiSyncResult } from "@percho/shared";
