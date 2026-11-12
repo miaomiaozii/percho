@@ -41,6 +41,9 @@ export function runtimeBuildLock(lock, version) {
 			delete packages[key].dev;
 		} else packages[key].dev = true;
 		const manifest = vendorManifest(source) ?? source;
+		// Vendor link packages keep nested deps under their vendor path (file: install),
+		// so dependency lookup must start there, not at the node_modules alias.
+		const searchRoot = source.link ? source.resolved : key;
 		for (const name of new Set([
 			...Object.keys(manifest.dependencies ?? {}),
 			...Object.keys(manifest.optionalDependencies ?? {}),
@@ -48,7 +51,7 @@ export function runtimeBuildLock(lock, version) {
 		])) {
 			const optional =
 				name in (manifest.optionalDependencies ?? {}) || manifest.peerDependenciesMeta?.[name]?.optional;
-			const child = locate(key, name, optional);
+			const child = locate(searchRoot, name, optional);
 			if (child) visit(child, runtime);
 		}
 	};

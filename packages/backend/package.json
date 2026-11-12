@@ -13,8 +13,14 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
+		"@earendil-works/pi-agent-core": "file:../../vendor/pi/packages/agent",
 		"@earendil-works/pi-ai": "file:../../vendor/pi/packages/ai",
+		"@earendil-works/pi-codemode": "file:../../vendor/pi/packages/codemode",
 		"@earendil-works/pi-coding-agent": "file:../../vendor/pi/packages/coding-agent",
+		"@earendil-works/pi-mcp": "file:../../vendor/pi/packages/mcp",
+		"@earendil-works/pi-schema": "file:../../vendor/pi/packages/schema",
+		"@earendil-works/pi-telemetry": "file:../../vendor/pi/packages/telemetry",
+		"@earendil-works/pi-tui": "file:../../vendor/pi/packages/tui",
 		"@percho/shared": "*",
 		"jsonc-parser": "^3.3.1",
 		"proper-lockfile": "^4.1.2",
