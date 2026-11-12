@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
 	autoSyncLocalPiProjects,
 	exportLocalPiProject,
+	LOCAL_PI_SOURCE_ENV,
 	listLocalPiProjects,
 	localPiSyncLedgerPath,
 	resolveLocalPiSource,
@@ -98,22 +99,42 @@ describe("syncLocalPiCredentials", () => {
 });
 
 describe("resolveLocalPiSource", () => {
+	// 不依赖跑测试的机器上是否装了本地 Pi：用 PERCHO_LOCAL_PI_DIR 指定候选目录。
+	async function withSourceOverride(dir: string, run: () => Promise<void>): Promise<void> {
+		const previous = process.env[LOCAL_PI_SOURCE_ENV];
+		process.env[LOCAL_PI_SOURCE_ENV] = dir;
+		try {
+			await run();
+		} finally {
+			if (previous === undefined) delete process.env[LOCAL_PI_SOURCE_ENV];
+			else process.env[LOCAL_PI_SOURCE_ENV] = previous;
+		}
+	}
+
 	it("本地 Pi 目录存在时选中它", async () => {
 		const { source, target } = scenario("resolve-found");
 		mkdirSync(`${source}/sessions`, { recursive: true });
-		expect(await resolveLocalPiSource(target)).not.toBeNull();
+		await withSourceOverride(source, async () => {
+			expect(await resolveLocalPiSource(target)).toBe(source);
+		});
 	});
 
 	it("目标与本地 Pi 目录重合时不返回，避免自己拷自己", async () => {
 		const { source } = scenario("resolve-overlap");
 		mkdirSync(`${source}/sessions`, { recursive: true });
-		// 候选来自固定列表（~/.pi/agent、~/.pi/agent-dev），传入临时目录时
-		// 只要候选不存在或重合就必须返回 null。
-		const resolved = await resolveLocalPiSource(source);
-		if (resolved !== null) {
+		await withSourceOverride(source, async () => {
+			// 与目标重合的候选必须被排除（不能自己拷自己）；返回的只会是其他候选或 null。
+			const resolved = await resolveLocalPiSource(source);
 			expect(resolved).not.toBe(source);
 			expect(resolved).not.toContain("local-pi-sync-test");
-		}
+		});
+	});
+
+	it("环境变量指定的目录不存在时不选中", async () => {
+		const { target } = scenario("resolve-missing");
+		await withSourceOverride(`${target}/../no-such-pi-dir`, async () => {
+			expect(await resolveLocalPiSource(target)).not.toBe(`${target}/../no-such-pi-dir`);
+		});
 	});
 });
 

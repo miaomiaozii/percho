@@ -1,6 +1,6 @@
 import { copyFile, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import type {
 	LocalPiAutoSyncResult,
 	LocalPiAutoSyncSummary,
@@ -10,10 +10,15 @@ import type {
 } from "@percho/shared";
 import { inside } from "./path-policy";
 
+/** 可以用这个环境变量指定要跟随的本地 Pi 安装目录（优先于默认候选）。 */
+export const LOCAL_PI_SOURCE_ENV = "PERCHO_LOCAL_PI_DIR";
 /** Local Pi CLI agent directories, in sync priority order. */
 export function localPiSourceCandidates(): string[] {
 	const home = homedir();
-	return [join(home, ".pi", "agent"), join(home, ".pi", "agent-dev")];
+	const candidates = [join(home, ".pi", "agent"), join(home, ".pi", "agent-dev")];
+	const override = process.env[LOCAL_PI_SOURCE_ENV]?.trim();
+	if (override) candidates.unshift(isAbsolute(override) ? override : resolve(override));
+	return candidates;
 }
 async function isDirectory(path: string): Promise<boolean> {
 	try {
