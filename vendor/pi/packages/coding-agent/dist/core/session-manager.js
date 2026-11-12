@@ -818,22 +818,13 @@ export class SessionManager {
                 requireExisting ? { flag: constants.O_WRONLY | constants.O_APPEND } : undefined);
         }
     }
+    // Percho parity with the 1.4.0 runtime: a failed append keeps the in-memory entry so
+    // callers can observe it via getEntries(); it must not be treated as persisted.
     _appendEntry(entry, requireExisting = false) {
-        const previousLeafId = this.leafId;
         this.fileEntries.push(entry);
         this.byId.set(entry.id, entry);
         this.leafId = entry.id;
-        try {
-            this._persist(entry, requireExisting);
-        }
-        catch (error) {
-            // Keep memory in line with the file: an entry that was not written must not become the
-            // parent of later entries, or the file would hold entries pointing to a missing parent.
-            this.fileEntries.pop();
-            this.byId.delete(entry.id);
-            this.leafId = previousLeafId;
-            throw error;
-        }
+        this._persist(entry, requireExisting);
     }
     /** Append a message as child of current leaf, then advance leaf. Returns entry id.
      * Does not allow writing CompactionSummaryMessage and BranchSummaryMessage directly.

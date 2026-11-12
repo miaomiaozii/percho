@@ -1803,7 +1803,7 @@ diff -ruN pi-orig/coding-agent/dist/core/session-manager.js patchtest2/node_modu
          if (!this.persist || !this.sessionFile)
              return;
          if (!this.flushed) {
-@@ -810,16 +813,18 @@
+@@ -810,23 +813,15 @@
              this.flushed = true;
          }
          else {
@@ -1814,17 +1814,30 @@ diff -ruN pi-orig/coding-agent/dist/core/session-manager.js patchtest2/node_modu
          }
      }
 -    _appendEntry(entry) {
-+    _appendEntry(entry, requireExisting = false) {
-         const previousLeafId = this.leafId;
-         this.fileEntries.push(entry);
-         this.byId.set(entry.id, entry);
-         this.leafId = entry.id;
-         try {
+-        const previousLeafId = this.leafId;
+-        this.fileEntries.push(entry);
+-        this.byId.set(entry.id, entry);
+-        this.leafId = entry.id;
+-        try {
 -            this._persist(entry);
-+            this._persist(entry, requireExisting);
-         }
-         catch (error) {
-             // Keep memory in line with the file: an entry that was not written must not become the
+-        }
+-        catch (error) {
+-            // Keep memory in line with the file: an entry that was not written must not become the
+-            // parent of later entries, or the file would hold entries pointing to a missing parent.
+-            this.fileEntries.pop();
+-            this.byId.delete(entry.id);
+-            this.leafId = previousLeafId;
+-            throw error;
+-        }
+-    }
++    // Percho parity with the 1.4.0 runtime: a failed append keeps the in-memory entry so
++    // callers can observe it via getEntries(); it must not be treated as persisted.
++    _appendEntry(entry, requireExisting = false) {
++        this.fileEntries.push(entry);
++        this.byId.set(entry.id, entry);
++        this.leafId = entry.id;
++        this._persist(entry, requireExisting);
++    }
 @@ -910,7 +915,7 @@
          return entry.id;
      }
