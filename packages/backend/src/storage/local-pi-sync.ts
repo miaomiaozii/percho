@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readdir, rename, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import type { LocalPiSyncProject, LocalPiSyncProjects, LocalPiSyncResult } from "@percho/shared";
@@ -32,10 +32,25 @@ export async function resolveLocalPiSource(target: string): Promise<string | nul
 	return null;
 }
 const CREDENTIAL_FILES = ["models.json", "auth.json"] as const;
+/** An empty JSON placeholder counts as "no data yet", so it never blocks a sync. */
+async function isEmptyCredentialFile(path: string): Promise<boolean> {
+	try {
+		const text = (await readFile(path, "utf8")).trim();
+		if (text === "") return true;
+		const parsed: unknown = JSON.parse(text);
+		if (parsed === null) return true;
+		if (Array.isArray(parsed)) return parsed.length === 0;
+		return typeof parsed === "object" && Object.keys(parsed as Record<string, unknown>).length === 0;
+	} catch {
+		// Unreadable or malformed: keep whatever is there rather than overwriting it.
+		return false;
+	}
+}
 /**
  * Copy model/auth files from the local Pi agent dir into Percho storage.
- * A file is copied when missing or when the source is newer; anything else is
- * left untouched. Best-effort per file: one unreadable file never blocks startup.
+ * A file is copied when missing, when it is still an empty placeholder, or when
+ * the source is newer; anything else is left untouched. Best-effort per file:
+ * one unreadable file never blocks startup.
  */
 export async function syncLocalPiCredentials(source: string, target: string): Promise<{ copied: string[] }> {
 	const copied: string[] = [];
@@ -45,7 +60,8 @@ export async function syncLocalPiCredentials(source: string, target: string): Pr
 			const from = join(source, name);
 			const to = join(target, name);
 			const [s, t] = await Promise.all([stat(from).catch(() => null), stat(to).catch(() => null)]);
-			if (!s?.isFile() || (t && t.mtimeMs >= s.mtimeMs)) continue;
+			if (!s?.isFile()) continue;
+			if (t && t.mtimeMs >= s.mtimeMs && !(await isEmptyCredentialFile(to))) continue;
 			const tmp = `${to}.local-pi-sync-tmp`;
 			await copyFile(from, tmp);
 			await rename(tmp, to);
