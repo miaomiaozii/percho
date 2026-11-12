@@ -1,7 +1,16 @@
-import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { resolveLocalPiSource, syncLocalPiCredentials } from "../src/storage/local-pi-sync";
+import {
+	autoSyncLocalPiProjects,
+	exportLocalPiProject,
+	listLocalPiProjects,
+	localPiSyncLedgerPath,
+	resolveLocalPiSource,
+	setLocalPiAutoSync,
+	syncLocalPiCredentials,
+	syncLocalPiProject,
+} from "../src/storage/local-pi-sync";
 
 /**
  * 本地 Pi 凭据同步（模型/凭据跟随本地 Pi）：
@@ -105,5 +114,87 @@ describe("resolveLocalPiSource", () => {
 			expect(resolved).not.toBe(source);
 			expect(resolved).not.toContain("local-pi-sync-test");
 		}
+	});
+});
+
+describe("项目会话双向同步与启动自动导入", () => {
+	it("手点导入会搬会话并把项目登记为启动自动同步", async () => {
+		const { source, target } = scenario("import-enrolls");
+		mkdirSync(`${source}/sessions/--proj-a--`, { recursive: true });
+		put(`${source}/sessions/--proj-a--`, "s1.jsonl", '{"type":"message"}\n');
+		put(`${source}/sessions/--proj-a--`, "s2.jsonl", '{"type":"message"}\n');
+
+		const result = await syncLocalPiProject(target, "--proj-a--", { source });
+		expect(result).toEqual({ project: "--proj-a--", added: 2, skipped: 0 });
+		expect(existsSync(`${target}/sessions/--proj-a--/s1.jsonl`)).toBe(true);
+		const ledger = JSON.parse(readFileSync(localPiSyncLedgerPath(target), "utf8")) as {
+			projects: Record<string, { auto: boolean }>;
+		};
+		expect(ledger.projects["--proj-a--"]?.auto).toBe(true);
+	});
+
+	it("导入是增量的：对端同名文件更新时跳过，不覆盖", async () => {
+		const { source, target } = scenario("import-incremental");
+		mkdirSync(`${source}/sessions/--proj-b--`, { recursive: true });
+		mkdirSync(`${target}/sessions/--proj-b--`, { recursive: true });
+		put(`${source}/sessions/--proj-b--`, "s1.jsonl", "from-pi\n", Date.now() - 600_000);
+		put(`${target}/sessions/--proj-b--`, "s1.jsonl", "mine\n", Date.now());
+
+		const result = await syncLocalPiProject(target, "--proj-b--", { source });
+		expect(result.added).toBe(0);
+		expect(result.skipped).toBe(1);
+		expect(readFileSync(`${target}/sessions/--proj-b--/s1.jsonl`, "utf8")).toBe("mine\n");
+	});
+
+	it("导出把 Percho 会话回流本地 Pi，但不覆盖本地 Pi 里更新的版本", async () => {
+		const { source, target } = scenario("export-no-clobber");
+		mkdirSync(`${target}/sessions/--proj-c--`, { recursive: true });
+		mkdirSync(`${source}/sessions/--proj-c--`, { recursive: true });
+		put(`${target}/sessions/--proj-c--`, "new.jsonl", "from-percho\n");
+		put(`${target}/sessions/--proj-c--`, "old.jsonl", "percho-old\n", Date.now() - 600_000);
+		put(`${source}/sessions/--proj-c--`, "old.jsonl", "pi-newer\n", Date.now());
+
+		const result = await exportLocalPiProject(target, "--proj-c--", { source });
+		expect(result).toEqual({ project: "--proj-c--", added: 1, skipped: 1 });
+		expect(readFileSync(`${source}/sessions/--proj-c--/new.jsonl`, "utf8")).toBe("from-percho\n");
+		expect(readFileSync(`${source}/sessions/--proj-c--/old.jsonl`, "utf8")).toBe("pi-newer\n");
+	});
+
+	it("启动自动导入只处理登记过的项目；开关关掉后不再拉", async () => {
+		const { source, target } = scenario("auto-sync-scope");
+		for (const name of ["--proj-d--", "--proj-e--"]) {
+			mkdirSync(`${source}/sessions/${name}`, { recursive: true });
+			put(`${source}/sessions/${name}`, "s1.jsonl", "x\n");
+		}
+		await setLocalPiAutoSync(target, "--proj-d--", true);
+
+		const first = await autoSyncLocalPiProjects(target, { source });
+		expect(first.attempted).toEqual(["--proj-d--"]);
+		expect(first.added).toBe(1);
+		expect(existsSync(`${target}/sessions/--proj-d--/s1.jsonl`)).toBe(true);
+		expect(existsSync(`${target}/sessions/--proj-e--/s1.jsonl`)).toBe(false);
+
+		await setLocalPiAutoSync(target, "--proj-d--", false);
+		const second = await autoSyncLocalPiProjects(target, { source });
+		expect(second.attempted).toEqual([]);
+		expect(second.added).toBe(0);
+	});
+
+	it("列表同时给出两侧会话数和自动状态", async () => {
+		const { source, target } = scenario("list-both-sides");
+		mkdirSync(`${source}/sessions/--proj-f--`, { recursive: true });
+		put(`${source}/sessions/--proj-f--`, "s1.jsonl", "x\n");
+		mkdirSync(`${target}/sessions/--proj-f--`, { recursive: true });
+		put(`${target}/sessions/--proj-f--`, "s1.jsonl", "x\n");
+		put(`${target}/sessions/--proj-f--`, "s2.jsonl", "percho only\n");
+		await setLocalPiAutoSync(target, "--proj-f--", true);
+
+		const listing = await listLocalPiProjects(target, { source });
+		expect(listing.available).toBe(true);
+		const project = listing.projects.find((item) => item.project === "--proj-f--");
+		expect(project?.sessions).toBe(1);
+		expect(project?.synced).toBe(1);
+		expect(project?.inStorage).toBe(2);
+		expect(project?.auto).toBe(true);
 	});
 });

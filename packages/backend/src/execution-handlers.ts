@@ -20,6 +20,8 @@ export function createExecutionHandlers(
 		querySessionProjects: () => backend.querySessionProjects(),
 		listLocalPiProjects: () => backend.listLocalPiProjects(),
 		syncLocalPiProject: ({ project }) => backend.syncLocalPiProject(project),
+		exportLocalPiProject: ({ project }) => backend.exportLocalPiProject(project),
+		setLocalPiAutoSync: ({ project, auto }) => backend.setLocalPiAutoSync(project, auto),
 		previewSessionProjectDeletion: ({ cwd }) => backend.previewSessionProjectDeletion(cwd),
 		deleteSessionProject: ({ cwd, token }) => backend.deleteSessionProject(cwd, token),
 		querySessionCatalog: ({ query }) => backend.querySessionCatalog(query),

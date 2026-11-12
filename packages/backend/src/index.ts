@@ -96,8 +96,12 @@ export { ModelPrefsService } from "./settings/model-prefs";
 export { SettingsService } from "./settings/settings";
 export { BUILTIN_SLASH_COMMANDS, slashCommandsForLoader, slashCommandsForSession } from "./slash-commands";
 export {
+	autoSyncLocalPiProjects,
+	exportLocalPiProject,
 	localPiSourceCandidates,
+	localPiSyncLedgerPath,
 	resolveLocalPiSource,
+	setLocalPiAutoSync,
 	syncLocalPiCredentials,
 } from "./storage/local-pi-sync";
 export {

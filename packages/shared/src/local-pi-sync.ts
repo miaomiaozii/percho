@@ -11,7 +11,11 @@ export interface LocalPiSyncProject {
 	sessions: number;
 	/** .jsonl files already present in Percho storage (same name). */
 	synced: number;
-	/** ISO mtime of the newest source session file, or null when the directory is empty. */
+	/** .jsonl session files in Percho storage for this project (可导出的数量). */
+	inStorage: number;
+	/** 已登记：启动时自动对该项目做增量导入. */
+	auto: boolean;
+	/** ISO mtime of the newest session file on either side, or null when both are empty. */
 	newestMtime: string | null;
 }
 export interface LocalPiSyncProjects {
@@ -24,4 +28,17 @@ export interface LocalPiSyncResult {
 	project: string;
 	added: number;
 	skipped: number;
+}
+export interface LocalPiAutoSyncResult {
+	project: string;
+	auto: boolean;
+}
+/** 启动自动同步的汇总（只覆盖账本里登记过的项目）. */
+export interface LocalPiAutoSyncSummary {
+	/** 账本里登记为自动同步的项目名. */
+	attempted: string[];
+	added: number;
+	skipped: number;
+	/** 复制出错的项目名（不影响其他项目）. */
+	failed: string[];
 }

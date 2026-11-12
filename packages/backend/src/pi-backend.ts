@@ -166,7 +166,9 @@ import { makeQuotaService } from "./settings/quota";
 import { SettingsService } from "./settings/settings";
 import { slashCommandsForLoader, slashCommandsForSession } from "./slash-commands";
 import {
+	exportLocalPiProject as exportLocalPiProjectStorage,
 	listLocalPiProjects as listLocalPiProjectsStorage,
+	setLocalPiAutoSync as setLocalPiAutoSyncStorage,
 	syncLocalPiProject as syncLocalPiProjectStorage,
 } from "./storage/local-pi-sync";
 import { privateDirectory } from "./storage/private-directory";
@@ -424,12 +426,25 @@ export class PiBackend {
 		this.assertRunning();
 		return listLocalPiProjectsStorage(getAgentDir());
 	}
-	/** 将选定项目的会话从本地 Pi 拷入 Percho 存储，并刷新会话目录。 */
+	/** 将选定项目的会话从本地 Pi 拷入 Percho 存储，并登记为启动自动同步。 */
 	async syncLocalPiProject(project: string): Promise<import("@percho/shared").LocalPiSyncResult> {
 		this.assertRunning();
 		const result = await syncLocalPiProjectStorage(getAgentDir(), project);
 		if (result.added > 0) await this.getSessionCatalog().refresh();
 		return result;
+	}
+	/** 回流：把选定项目的 Percho 会话导出到本地 Pi 会话目录（不自动，不覆盖更新的版本）。 */
+	async exportLocalPiProject(project: string): Promise<import("@percho/shared").LocalPiSyncResult> {
+		this.assertRunning();
+		return exportLocalPiProjectStorage(getAgentDir(), project);
+	}
+	/** 开关选定项目的启动自动增量同步。 */
+	async setLocalPiAutoSync(
+		project: string,
+		auto: boolean,
+	): Promise<import("@percho/shared").LocalPiAutoSyncResult> {
+		this.assertRunning();
+		return setLocalPiAutoSyncStorage(getAgentDir(), project, auto);
 	}
 	private async archives(): Promise<SessionArchiveService> {
 		this.archiveService ??= new SessionArchiveService({

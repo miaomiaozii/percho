@@ -8,6 +8,8 @@ import { LocalPiSyncPanel } from "./LocalPiSyncPanel";
 const mocks = vi.hoisted(() => ({
 	list: vi.fn(),
 	sync: vi.fn(),
+	export: vi.fn(),
+	setAuto: vi.fn(),
 	environment: { kind: "local" } as EnvironmentRef,
 }));
 vi.mock("../../i18n", () => ({ useT: () => (key: string) => key }));
@@ -18,6 +20,8 @@ vi.mock("../../environment-api", () => ({
 	getExecutionApi: () => ({
 		listLocalPiProjects: mocks.list,
 		syncLocalPiProject: mocks.sync,
+		exportLocalPiProject: mocks.export,
+		setLocalPiAutoSync: mocks.setAuto,
 	}),
 }));
 vi.mock("../../stores/projects", () => ({
@@ -29,8 +33,12 @@ const project: LocalPiSyncProject = {
 	project: "--C--Users-Administrator--",
 	sessions: 3,
 	synced: 2,
+	inStorage: 1,
+	auto: false,
 	newestMtime: "2026-11-10T00:00:00.000Z",
 };
+
+const listed = { source: "C:\\Users\\Administrator\\.pi\\agent", available: true } as const;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -38,6 +46,8 @@ let root: Root;
 beforeEach(() => {
 	mocks.list.mockReset();
 	mocks.sync.mockReset();
+	mocks.export.mockReset();
+	mocks.setAuto.mockReset();
 	container = document.createElement("div");
 	document.body.appendChild(container);
 	root = createRoot(container);
@@ -58,16 +68,20 @@ async function render() {
 	});
 }
 
+function buttonWith(text: string): HTMLButtonElement | undefined {
+	return [...container.querySelectorAll("button")].find((button) => button.textContent === text);
+}
+
 it("lists local Pi projects with unsynced deltas and syncs per project", async () => {
-	const result = { source: "C:\\Users\\Administrator\\.pi\\agent", available: true } as const;
 	mocks.list
-		.mockResolvedValueOnce({ ...result, projects: [project] })
-		.mockResolvedValue({ ...result, projects: [{ ...project, synced: 3 }] });
+		.mockResolvedValueOnce({ ...listed, projects: [project] })
+		.mockResolvedValue({ ...listed, projects: [{ ...project, synced: 3 }] });
 	mocks.sync.mockResolvedValue({ project: project.project, added: 1, skipped: 0 });
 	await render();
 	expect(container.textContent).toContain("piSync.title");
 	expect(container.textContent).toContain("piSync.new");
-	const button = [...container.querySelectorAll("button")].find((b) => b.textContent === "piSync.sync");
+	expect(container.textContent).toContain("piSync.inStorage");
+	const button = buttonWith("piSync.sync");
 	expect(button).toBeTruthy();
 	await act(async () => {
 		button!.click();
@@ -76,6 +90,34 @@ it("lists local Pi projects with unsynced deltas and syncs per project", async (
 	expect(container.textContent).toContain("piSync.done");
 	// Refreshed list shows everything synced: no "new" badge, no sync button.
 	expect(mocks.list).toHaveBeenCalledTimes(2);
+});
+
+it("exports Percho sessions back to the local Pi on demand", async () => {
+	mocks.list.mockResolvedValue({ ...listed, projects: [project] });
+	mocks.export.mockResolvedValue({ project: project.project, added: 1, skipped: 0 });
+	await render();
+	const button = buttonWith("piSync.export");
+	expect(button).toBeTruthy();
+	await act(async () => {
+		button!.click();
+	});
+	expect(mocks.export).toHaveBeenCalledWith({ project: project.project });
+	expect(container.textContent).toContain("piSync.exported");
+});
+
+it("shows and toggles the startup auto-import switch", async () => {
+	mocks.list
+		.mockResolvedValueOnce({ ...listed, projects: [project] })
+		.mockResolvedValue({ ...listed, projects: [{ ...project, auto: true }] });
+	mocks.setAuto.mockResolvedValue({ project: project.project, auto: true });
+	await render();
+	expect(buttonWith("piSync.autoOff")).toBeTruthy();
+	await act(async () => {
+		buttonWith("piSync.autoOff")!.click();
+	});
+	expect(mocks.setAuto).toHaveBeenCalledWith({ project: project.project, auto: true });
+	// Refreshed list reports the project as enrolled.
+	expect(buttonWith("piSync.autoOn")).toBeTruthy();
 });
 
 it("shows the no-source hint when the local Pi directory is missing", async () => {

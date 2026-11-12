@@ -8,11 +8,14 @@ import { FolderIcon } from "../icons";
 import { Button } from "../ui/Button";
 
 interface RowState {
-	syncing: boolean;
-	added: number | null;
+	busy: boolean;
+	imported: number | null;
+	exported: number | null;
 }
 
-/** 本地 Pi 同步面板：模型/凭据启动时自动跟随，会话按项目手动同步。 */
+const IDLE: RowState = { busy: false, imported: null, exported: null };
+
+/** 本地 Pi 同步面板：模型/凭据自动跟随；会话按项目导入或导出，手点过的启动时自动增量导入。 */
 export function LocalPiSyncPanel() {
 	const t = useT();
 	const environment = useEnvironment();
@@ -45,19 +48,22 @@ export function LocalPiSyncPanel() {
 		[addedProjects],
 	);
 
-	const sync = useCallback(
+	const importProject = useCallback(
 		async (names: string[]) => {
 			setRows((prev) => ({
 				...prev,
-				...Object.fromEntries(names.map((name) => [name, { syncing: true, added: null }])),
+				...Object.fromEntries(names.map((name) => [name, { ...(prev[name] ?? IDLE), busy: true }])),
 			}));
 			const api = getExecutionApi(environment);
 			for (const name of names) {
 				try {
 					const result = await api.syncLocalPiProject({ project: name });
-					setRows((prev) => ({ ...prev, [name]: { syncing: false, added: result.added } }));
+					setRows((prev) => ({
+						...prev,
+						[name]: { busy: false, imported: result.added, exported: prev[name]?.exported ?? null },
+					}));
 				} catch {
-					setRows((prev) => ({ ...prev, [name]: { syncing: false, added: null } }));
+					setRows((prev) => ({ ...prev, [name]: { ...IDLE } }));
 				}
 			}
 			await refresh().catch(() => undefined);
@@ -65,8 +71,41 @@ export function LocalPiSyncPanel() {
 		[environment, refresh],
 	);
 
+	const exportProject = useCallback(
+		async (name: string) => {
+			setRows((prev) => ({ ...prev, [name]: { ...(prev[name] ?? IDLE), busy: true } }));
+			const api = getExecutionApi(environment);
+			try {
+				const result = await api.exportLocalPiProject({ project: name });
+				setRows((prev) => ({
+					...prev,
+					[name]: { busy: false, imported: prev[name]?.imported ?? null, exported: result.added },
+				}));
+			} catch {
+				setRows((prev) => ({ ...prev, [name]: { ...IDLE } }));
+			}
+			await refresh().catch(() => undefined);
+		},
+		[environment, refresh],
+	);
+
+	const toggleAuto = useCallback(
+		async (name: string, auto: boolean) => {
+			setRows((prev) => ({ ...prev, [name]: { ...(prev[name] ?? IDLE), busy: true } }));
+			const api = getExecutionApi(environment);
+			try {
+				await api.setLocalPiAutoSync({ project: name, auto });
+			} catch {
+				// 开关失败时下一次刷新会回到真实状态
+			}
+			await refresh().catch(() => undefined);
+		},
+		[environment, refresh],
+	);
+
 	const pending = useMemo(() => projects.filter((project) => project.synced < project.sessions), [projects]);
-	const anySyncing = Object.values(rows).some((row) => row.syncing);
+	const autoCount = useMemo(() => projects.filter((project) => project.auto).length, [projects]);
+	const anyBusy = Object.values(rows).some((row) => row.busy);
 
 	return (
 		<section aria-label={t("piSync.title")} className="flex flex-col gap-3 text-ui-13">
@@ -74,6 +113,7 @@ export function LocalPiSyncPanel() {
 				<h2 className="font-medium text-ink">{t("piSync.title")}</h2>
 				<p className="text-ink-dim">{t("piSync.description")}</p>
 				<p className="text-ink-faint">{t("piSync.modelsAuto")}</p>
+				<p className="text-ink-faint">{t("piSync.safetyNote")}</p>
 			</header>
 			{!isLocal ? (
 				<p className="text-ink-faint">{t("piSync.remoteNote")}</p>
@@ -90,10 +130,10 @@ export function LocalPiSyncPanel() {
 						{pending.length > 0 && (
 							<Button
 								size="sm"
-								disabled={anySyncing}
-								onClick={() => void sync(pending.map((project) => project.project))}
+								disabled={anyBusy}
+								onClick={() => void importProject(pending.map((project) => project.project))}
 							>
-								{anySyncing ? t("piSync.syncing") : t("piSync.syncAll", { count: pending.length })}
+								{anyBusy ? t("piSync.syncing") : t("piSync.syncAll", { count: pending.length })}
 							</Button>
 						)}
 					</div>
@@ -114,25 +154,49 @@ export function LocalPiSyncPanel() {
 									<span className="shrink-0 text-ink-faint">
 										{t("piSync.sessions", { count: project.sessions })}
 									</span>
+									<span className="shrink-0 text-ink-faint">
+										{t("piSync.inStorage", { count: project.inStorage })}
+									</span>
 									{added > 0 && (
 										<span className="shrink-0 rounded-lg bg-hover px-2 py-1 text-ink-dim">
 											{t("piSync.new", { count: added })}
 										</span>
 									)}
-									{row?.syncing ? (
+									{row?.busy ? (
 										<span className="shrink-0 text-ink-dim">{t("piSync.syncing")}</span>
-									) : row?.added ? (
-										<span className="shrink-0 text-ink-dim">{t("piSync.done", { count: row.added })}</span>
+									) : row?.imported ? (
+										<span className="shrink-0 text-ink-dim">{t("piSync.done", { count: row.imported })}</span>
+									) : row?.exported ? (
+										<span className="shrink-0 text-ink-dim">
+											{t("piSync.exported", { count: row.exported })}
+										</span>
 									) : null}
 									{added > 0 && (
-										<Button size="sm" disabled={anySyncing} onClick={() => void sync([project.project])}>
+										<Button
+											size="sm"
+											disabled={anyBusy}
+											onClick={() => void importProject([project.project])}
+										>
 											{t("piSync.sync")}
 										</Button>
 									)}
+									{project.inStorage > 0 && (
+										<Button size="sm" disabled={anyBusy} onClick={() => void exportProject(project.project)}>
+											{t("piSync.export")}
+										</Button>
+									)}
+									<Button
+										size="sm"
+										disabled={anyBusy}
+										onClick={() => void toggleAuto(project.project, !project.auto)}
+									>
+										{project.auto ? t("piSync.autoOn") : t("piSync.autoOff")}
+									</Button>
 								</li>
 							);
 						})}
 					</ul>
+					<p className="text-ink-faint">{t("piSync.autoNote", { count: autoCount })}</p>
 				</>
 			)}
 		</section>

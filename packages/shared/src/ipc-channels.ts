@@ -197,6 +197,21 @@ export const SESSION_CHANNELS = {
 		"environment",
 		"mutation",
 	)<{ project: string }, import("./local-pi-sync").LocalPiSyncResult>({ project: input.id }),
+	/** 将选定项目的 Percho 会话导出到本地 Pi 会话目录（显式回流） */
+	exportLocalPiProject: ch(
+		"localPi:exportProject",
+		"environment",
+		"mutation",
+	)<{ project: string }, import("./local-pi-sync").LocalPiSyncResult>({ project: input.id }),
+	/** 开关选定项目的启动自动增量同步 */
+	setLocalPiAutoSync: ch(
+		"localPi:setAutoSync",
+		"environment",
+		"mutation",
+	)<{ project: string; auto: boolean }, import("./local-pi-sync").LocalPiAutoSyncResult>({
+		project: input.id,
+		auto: input.boolean,
+	}),
 	querySessionCatalog: ch(
 		"session:catalogQuery",
 		"environment",

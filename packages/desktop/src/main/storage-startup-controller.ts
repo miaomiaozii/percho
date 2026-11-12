@@ -1,4 +1,5 @@
 import {
+	autoSyncLocalPiProjects,
 	initializeLocalStorage,
 	inspectLocalStorage,
 	type LocalStorageRecord,
@@ -160,6 +161,15 @@ export class StorageStartupController {
 			if (target && source) {
 				const { copied } = await syncLocalPiCredentials(source, target);
 				if (copied.length > 0) console.log(`[local-pi-sync] ${copied.join(", ")}`);
+			}
+			// 会话不自动双向：只对“手点过同步”的项目做启动增量导入（账本在当前存储根下）。
+			if (target) {
+				const auto = await autoSyncLocalPiProjects(target);
+				if (auto.attempted.length > 0)
+					console.log(
+						`[local-pi-sync] 启动自动导入 ${auto.attempted.length} 个项目：新增 ${auto.added}，跳过 ${auto.skipped}` +
+							(auto.failed.length > 0 ? `，失败 ${auto.failed.join(",")}` : ""),
+					);
 			}
 		} catch (error) {
 			console.warn("[local-pi-sync]", error);
