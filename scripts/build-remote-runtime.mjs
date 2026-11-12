@@ -128,6 +128,15 @@ try {
 		await run(join(stage, "bin", name), ["--version"]);
 	}
 	await run("npm", ["prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
+	// The artifact manifest must record the versions actually shipped: npm
+	// resolves the file: links to the vendored packages' real versions, and
+	// the runtime's own check reports those versions back.
+	for (const name of Object.keys(selected.manifest.dependencies)) {
+		const link = selected.lock.packages[`node_modules/${name}`];
+		if (!link?.link || !link.resolved) continue;
+		const resolvedManifest = JSON.parse(await readFile(join(stage, link.resolved, "package.json"), "utf8"));
+		selected.manifest.dependencies[name] = resolvedManifest.version;
+	}
 	delete selected.manifest.devDependencies;
 	selected.manifest.perchoRuntime = {
 		releaseId,

@@ -69,7 +69,11 @@ export function runtimeBuildLock(lock, version) {
 	// directories themselves and locks their on-disk manifests' deps.
 	for (const key of Object.keys(lock.packages)) {
 		const entry = lock.packages[key];
-		if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
+		if (
+			!entry?.link ||
+			typeof entry.resolved !== "string" ||
+			!entry.resolved.startsWith("vendor/pi/packages/")
+		)
 			continue;
 		const dirEntry = lock.packages[entry.resolved];
 		if (!dirEntry) {
@@ -97,7 +101,11 @@ export function runtimeBuildLock(lock, version) {
 	// its directory entry. Sibling deps were already locked while visiting the
 	// alias; only the directory entries themselves are missing here.
 	for (const [key, entry] of Object.entries(packages)) {
-		if (!entry?.link || typeof entry.resolved !== "string" || !entry.resolved.startsWith("vendor/pi/packages/"))
+		if (
+			!entry?.link ||
+			typeof entry.resolved !== "string" ||
+			!entry.resolved.startsWith("vendor/pi/packages/")
+		)
 			continue;
 		if (packages[entry.resolved]) continue;
 		const dirEntry = lock.packages[entry.resolved];
