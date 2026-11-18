@@ -40,12 +40,12 @@ const defaultReadOperations = {
  * appended during the read is not counted and a growing file still ends; a file reporting size 0 (such
  * as /proc files) and other file types until EOF.
  */
-async function* readLocalFileChunks(path, { signal }) {
+async function* readLocalFileChunks(path, _options) {
     const handle = await fsOpen(path, "r");
     try {
         const stats = await handle.stat();
         const end = stats.isFile() && stats.size > 0 ? stats.size - 1 : undefined;
-        yield* handle.createReadStream({ end, signal, autoClose: false });
+        yield* handle.createReadStream({ end, autoClose: false });
     }
     finally {
         await handle.close();
