@@ -750,6 +750,9 @@ export const en: Messages = {
 		compressionEvaporationHint:
 			"Trims older tool results as they enter the context — a different mechanism from summarizing the whole history. A third-party plugin cannot cancel it, so takeover forces it off.",
 		codemode: "Code Mode",
+		fastMode: "Fast mode",
+		fastModeHint:
+			"Requests the priority service tier for OpenAI / Codex models: faster responses, billed at a higher rate or using more quota. Other models are not affected.",
 		codemodeOnly: "Code Mode only",
 		codemodeOnlyHint:
 			"Requires Code Mode. Route script-callable tools through Run script. Tool permission rules still apply. Off by default; applies to new sessions or after restarting the app.",

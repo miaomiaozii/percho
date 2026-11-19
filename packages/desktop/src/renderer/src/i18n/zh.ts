@@ -722,6 +722,9 @@ export const zh = {
 		compressionEvaporationHint:
 			"工具结果进入上下文后，旧内容会被即时裁剪（跟“整批历史摘要”是两回事）。第三方压缩插件拦不到它，所以接管期间会被强制关。",
 		codemode: "Code Mode",
+		fastMode: "快速模式",
+		fastModeHint:
+			"对 OpenAI / Codex 模型请求 priority 服务等级，响应更快，但按更高倍率计费或消耗更多额度；其他模型不受影响",
 		codemodeOnly: "Code Mode 独占模式",
 		codemodeOnlyHint:
 			"需要开启 Code Mode。支持脚本调用的工具统一通过“组合执行”使用，各工具的权限规则保持不变。默认关闭，新建会话或重启应用后生效。",

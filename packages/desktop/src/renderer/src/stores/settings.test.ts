@@ -54,6 +54,8 @@ const piMock = vi.hoisted(() => ({
 			thresholdPct: 80,
 		}),
 	),
+	getFastModeConfig: vi.fn(() => Promise.resolve({ enabled: false })),
+	setFastModeEnabled: vi.fn((input: { enabled: boolean }) => Promise.resolve({ enabled: input.enabled })),
 	lanGetStatus: vi.fn(() => Promise.resolve(null)),
 	listProviders: vi.fn(() => Promise.resolve([])),
 	getModelPrefs: vi.fn(() => Promise.resolve({ hiddenModels: {}, subagentModels: {} })),
@@ -79,6 +81,8 @@ function resetStore() {
 		compressionTakeover: null,
 		compressionEvaporation: null,
 		compressionSaving: false,
+		fastModeEnabled: null,
+		fastModeSaving: false,
 		codemodeEnabled: null,
 		codemodeOnly: null,
 		codemodeSaving: false,
@@ -90,6 +94,35 @@ function resetStore() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	resetStore();
+});
+
+describe("settings store：快速模式开关（乐观 + 后端回读 + 失败回滚）", () => {
+	it("加载进 store；读不到保持 null", async () => {
+		piMock.getFastModeConfig.mockResolvedValue({ enabled: true });
+		await useSettingsStore.getState().refresh();
+		await vi.waitFor(() => expect(useSettingsStore.getState().fastModeEnabled).toBe(true));
+		piMock.getFastModeConfig.mockRejectedValue(new Error("boom"));
+		useSettingsStore.setState({ fastModeEnabled: null });
+		await useSettingsStore.getState().refresh();
+		expect(useSettingsStore.getState().fastModeEnabled).toBeNull();
+	});
+
+	it("打开：调后端并以回读值为准", async () => {
+		useSettingsStore.setState({ fastModeEnabled: false });
+		await useSettingsStore.getState().setFastModeEnabled(true);
+		expect(piMock.setFastModeEnabled).toHaveBeenCalledWith({ enabled: true });
+		expect(useSettingsStore.getState().fastModeEnabled).toBe(true);
+		expect(useSettingsStore.getState().fastModeSaving).toBe(false);
+	});
+
+	it("写盘失败：回滚并报错", async () => {
+		useSettingsStore.setState({ fastModeEnabled: false });
+		piMock.setFastModeEnabled.mockRejectedValueOnce(new Error("写盘失败"));
+		await useSettingsStore.getState().setFastModeEnabled(true);
+		expect(useSettingsStore.getState().fastModeEnabled).toBe(false);
+		expect(useSettingsStore.getState().error).toBe("写盘失败");
+		expect(useSettingsStore.getState().fastModeSaving).toBe(false);
+	});
 });
 
 describe("settings store：上下文压缩两层开关（乐观 + 后端回读权威值 + 失败回滚）", () => {

@@ -29,6 +29,9 @@ export function GeneralPanel() {
 	const compressionSaving = useSettingsStore((s) => s.compressionSaving);
 	const setCompressionSdkAuto = useSettingsStore((s) => s.setCompressionSdkAuto);
 	const setCompressionGuard = useSettingsStore((s) => s.setCompressionGuard);
+	const fastModeEnabled = useSettingsStore((s) => s.fastModeEnabled);
+	const fastModeSaving = useSettingsStore((s) => s.fastModeSaving);
+	const setFastModeEnabled = useSettingsStore((s) => s.setFastModeEnabled);
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -50,6 +53,13 @@ export function GeneralPanel() {
 					onCheckedChange={(only) => void setCodemodeOnly(only)}
 				/>
 			</div>
+			<SettingsSwitchRow
+				title={t("settings.fastMode")}
+				hint={t("settings.fastModeHint")}
+				checked={fastModeEnabled === true}
+				disabled={fastModeEnabled === null || fastModeSaving}
+				onCheckedChange={(enabled) => void setFastModeEnabled(enabled)}
+			/>
 			<div className="flex flex-col gap-3">
 				<SettingsSwitchRow
 					title={t("settings.compressionTakeover")}

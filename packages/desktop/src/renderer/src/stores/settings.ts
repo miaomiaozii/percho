@@ -66,6 +66,9 @@ interface SettingsStore {
 	compressionSdkAuto: boolean | null;
 	compressionGuard: boolean | null;
 	compressionSaving: boolean;
+	/** 快速模式（Codex fast mode）开关（null = 未加载） */
+	fastModeEnabled: boolean | null;
+	fastModeSaving: boolean;
 	codemodeEnabled: boolean | null;
 	codemodeOnly: boolean | null;
 	codemodeSaving: boolean;
@@ -111,6 +114,7 @@ interface SettingsStore {
 	setCompressionSdkAuto: (enabled: boolean) => Promise<void>;
 	setCompressionTakeover: (enabled: boolean) => Promise<void>;
 	setCompressionEvaporation: (enabled: boolean) => Promise<void>;
+	setFastModeEnabled: (enabled: boolean) => Promise<void>;
 	setCompressionGuard: (enabled: boolean) => Promise<void>;
 	setCodemodeEnabled: (enabled: boolean) => Promise<void>;
 	setCodemodeOnly: (only: boolean) => Promise<void>;
@@ -403,6 +407,11 @@ function createSettingsStore(environment: EnvironmentRef) {
 					}),
 				)
 				.catch(() => {});
+			// 快速模式：读不到就留 null（UI 置灰）
+			void getExecutionApi(environment)
+				.getFastModeConfig()
+				.then((c) => set({ fastModeEnabled: c.enabled }))
+				.catch(() => {});
 		};
 		const loadModelsData = async (mode: "local" | "mutation"): Promise<void> => {
 			void readPrefs().catch((error) =>
@@ -467,6 +476,8 @@ function createSettingsStore(environment: EnvironmentRef) {
 			compressionEvaporation: null,
 			compressionGuard: null,
 			compressionSaving: false,
+			fastModeEnabled: null,
+			fastModeSaving: false,
 			codemodeEnabled: null,
 			codemodeOnly: null,
 			codemodeSaving: false,
@@ -532,6 +543,23 @@ function createSettingsStore(environment: EnvironmentRef) {
 						channelWatchEnabled: previous,
 						error: error instanceof Error ? error.message : String(error),
 					});
+				}
+			},
+
+			setFastModeEnabled: async (enabled) => {
+				if (get().fastModeSaving) return;
+				const previous = get().fastModeEnabled;
+				set({ fastModeSaving: true, fastModeEnabled: enabled });
+				try {
+					const next = await getExecutionApi(environment).setFastModeEnabled({ enabled });
+					set({ fastModeEnabled: next.enabled, error: null });
+				} catch (error) {
+					set({
+						fastModeEnabled: previous,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				} finally {
+					set({ fastModeSaving: false });
 				}
 			},
 

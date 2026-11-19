@@ -111,6 +111,25 @@ export function writeSdkAutoCompression(agentDir: string, enabled: boolean): voi
 	log.info("SDK 自动压缩开关已保存", enabled);
 }
 
+/**
+ * 快速模式（Codex fast mode）：`fastMode.enabled`，缺省关（只有显式 true 才开，与压缩各层相反——它会多计费）。
+ * 生效点是 `pi-backend` 注入给 `makeFastModeExtension` 的 `isEnabled` 闭包（每次请求实时读），无需重载会话。
+ */
+export function readFastModeEnabled(agentDir: string): boolean {
+	const settings = readSettings(agentDir);
+	return isRecord(settings.fastMode) && settings.fastMode.enabled === true;
+}
+
+/** 只改 `fastMode.enabled`，保留同段其他键 */
+export function writeFastModeEnabled(agentDir: string, enabled: boolean): void {
+	settingsStore(agentDir).updateSync((existing) => {
+		const fastMode = isRecord(existing.fastMode) ? existing.fastMode : {};
+		fastMode.enabled = enabled;
+		existing.fastMode = fastMode;
+	});
+	log.info("快速模式开关已保存", enabled);
+}
+
 /** 只改 `compactionGuard.enabled`，保留阈值/冷却等调参键 */
 export function writeCompactionGuardEnabled(agentDir: string, enabled: boolean): void {
 	settingsStore(agentDir).updateSync((existing) => {

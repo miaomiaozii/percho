@@ -4,11 +4,37 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	readCompressionConfig,
+	readFastModeEnabled,
 	setCompressionTakeover,
 	writeCompactionGuardEnabled,
 	writeEvaporationEnabled,
+	writeFastModeEnabled,
 	writeSdkAutoCompression,
 } from "./compression";
+
+describe("快速模式开关", () => {
+	let fmDir = "";
+	beforeEach(() => {
+		fmDir = mkdtempSync(join(tmpdir(), "percho-fastmode-"));
+	});
+	afterEach(() => {
+		rmSync(fmDir, { recursive: true, force: true });
+	});
+
+	it("默认关、写开/关回读、保留同段其他键与其他段", () => {
+		expect(readFastModeEnabled(fmDir)).toBe(false);
+		writeFileSync(
+			join(fmDir, "settings.json"),
+			JSON.stringify({ fastMode: { note: 1 }, compaction: { reserveTokens: 1 } }),
+		);
+		writeFastModeEnabled(fmDir, true);
+		expect(readFastModeEnabled(fmDir)).toBe(true);
+		const raw = JSON.parse(readFileSync(join(fmDir, "settings.json"), "utf8"));
+		expect(raw).toEqual({ fastMode: { note: 1, enabled: true }, compaction: { reserveTokens: 1 } });
+		writeFastModeEnabled(fmDir, false);
+		expect(readFastModeEnabled(fmDir)).toBe(false);
+	});
+});
 
 let dir = "";
 beforeEach(() => {

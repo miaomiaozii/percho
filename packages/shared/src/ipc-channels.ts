@@ -904,6 +904,13 @@ export const SETTINGS_CHANNELS = {
 		"environment",
 		"mutation",
 	)<{ enabled: boolean }, CompressionConfig>({ enabled: input.boolean }),
+	/** 快速模式（Codex fast mode，OpenAI Responses 系请求 service_tier=priority）：写后回读 */
+	getFastModeConfig: ch("fastMode:getConfig", "environment", "read")<void, { enabled: boolean }>(),
+	setFastModeEnabled: ch(
+		"fastMode:setEnabled",
+		"environment",
+		"mutation",
+	)<{ enabled: boolean }, { enabled: boolean }>({ enabled: input.boolean }),
 	/** 项目信任请求应答（选项下标） */
 	respondTrust: ch(
 		"trust:respond",

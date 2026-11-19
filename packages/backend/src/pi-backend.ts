@@ -155,9 +155,11 @@ import {
 } from "./settings/codemode";
 import {
 	readCompressionConfig,
+	readFastModeEnabled,
 	setCompressionTakeover,
 	writeCompactionGuardEnabled,
 	writeEvaporationEnabled,
+	writeFastModeEnabled,
 	writeSdkAutoCompression,
 } from "./settings/compression";
 import { LoginService } from "./settings/login";
@@ -184,6 +186,7 @@ import {
 import { makeCompactionGuardExtension } from "./tools/compaction-guard";
 import { createCompactionRequestPolicy } from "./tools/compaction-guard/request-policy";
 import { makeEvapExtension, reportEvapBatch } from "./tools/context-evaporation";
+import { makeFastModeExtension } from "./tools/fast-mode";
 import { collectMcpTools, makeMcpInventoryExtension } from "./tools/mcp-inventory";
 import { makeShowImageTool } from "./tools/show-image";
 import { discoverAgents, isSubagentSessionPath, makeSubagentTool } from "./tools/subagent";
@@ -902,12 +905,14 @@ export class PiBackend {
 		| ReturnType<typeof makeChannelWatchExtension>
 		| ReturnType<typeof makeEvapExtension>
 		| ReturnType<typeof makeCompactionGuardExtension>
+		| ReturnType<typeof makeFastModeExtension>
 	> {
 		const factories: Array<
 			| ReturnType<typeof makeTodoReminderExtension>
 			| ReturnType<typeof makeChannelWatchExtension>
 			| ReturnType<typeof makeEvapExtension>
 			| ReturnType<typeof makeCompactionGuardExtension>
+			| ReturnType<typeof makeFastModeExtension>
 		> = [];
 		factories.push((pi) => {
 			pi.on("input", () => (this.stopping ? { action: "handled" } : { action: "continue" }));
@@ -939,6 +944,8 @@ export class PiBackend {
 				},
 			}),
 		);
+		// 快速模式（Codex fast mode）：OpenAI Responses 系请求带 service_tier=priority；每次请求实时读开关。
+		factories.push(makeFastModeExtension({ isEnabled: () => readFastModeEnabled(getAgentDir()) }));
 		// 摘要输入限制与观测。主动压缩在 wireSession 绑定的请求策略中，不在 settled 启动。
 		// 观测双通道：log（快速 grep）+ trace_custom `compaction_guard` 行（reducer 未知类型 no-op）
 		factories.push(
@@ -3206,6 +3213,16 @@ export class PiBackend {
 	setCompactionGuardEnabled(enabled: boolean): import("@percho/shared").CompressionConfig {
 		writeCompactionGuardEnabled(getAgentDir(), enabled);
 		return readCompressionConfig(getAgentDir());
+	}
+
+	getFastModeConfig(): { enabled: boolean } {
+		return { enabled: readFastModeEnabled(getAgentDir()) };
+	}
+
+	/** 快速模式开关：生效点是注入给 makeFastModeExtension 的 `isEnabled` 闭包（每次实时读），无需重载会话 */
+	setFastModeEnabled(enabled: boolean): { enabled: boolean } {
+		writeFastModeEnabled(getAgentDir(), enabled);
+		return { enabled: readFastModeEnabled(getAgentDir()) };
 	}
 
 	/** 蒸发开关：生效点是注入给 makeEvapExtension 的 `isEnabled` 闭包（每次实时读），无需重载会话 */

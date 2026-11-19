@@ -131,6 +131,8 @@ export function createExecutionHandlers(
 		setCompactionGuardEnabled: ({ enabled }) => backend.setCompactionGuardEnabled(enabled),
 		setCompressionTakeover: ({ enabled }) => backend.setCompressionTakeover(enabled),
 		setEvaporationEnabled: ({ enabled }) => backend.setEvaporationEnabled(enabled),
+		getFastModeConfig: () => backend.getFastModeConfig(),
+		setFastModeEnabled: ({ enabled }) => backend.setFastModeEnabled(enabled),
 		respondTrust: ({ requestId, answer }) => backend.respondTrust(requestId, answer),
 		searchCatalog: ({ query, type, page }) => backend.packages.searchPackages(query, type, page),
 		installPackage: ({ name }) => backend.packages.installPackage(name),
