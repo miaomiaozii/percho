@@ -233,9 +233,33 @@ export function createMcpExtension(options = {}) {
             return work;
         };
         const listeners = new Set();
+        let phase = "closed";
+        let notice;
+        const emitStatus = () => {
+            if (!options.onStatus) return;
+            const snapshot = {
+                phase,
+                servers: phase === "closed" ? [] : servers.map(({ entry, connection, runtimeError }) => ({
+                    name: entry.name, source: entry.source, scope: entry.scope ?? "global",
+                    ...(entry.override ? { override: entry.override } : {}),
+                    state: !isEnabled({ entry }) ? "disabled" : runtimeError ? "failed" : connection?.state ?? "connecting",
+                    ...((runtimeError || connection?.error) ? { error: runtimeError || connection.error } : {}),
+                    tools: [...(serverTools.get(entry.name) ?? [])].map((name) => {
+                        const owner = toolOwners.get(name);
+                        const tool = connection?.tools.find((item) => owner === `${entry.name}\0${item.name}`);
+                        const readOnly = tool?.annotations?.readOnlyHint;
+                        return { name, ...(typeof readOnly === "boolean" ? { readOnly } : {}) };
+                    }),
+                })),
+                errors: phase === "closed" ? [] : [...configErrors],
+                ...(phase !== "closed" && notice ? { notice: { ...notice } } : {}),
+            };
+            try { options.onStatus(snapshot); } catch { /* Observers cannot affect the extension. */ }
+        };
         const emitChange = () => {
             for (const listener of listeners)
                 listener();
+            if (phase === "running") emitStatus();
         };
         const subscribe = (listener) => {
             listeners.add(listener);
@@ -417,15 +441,23 @@ export function createMcpExtension(options = {}) {
             if (activate.length > 0)
                 pi.setActiveTools([...active, ...activate]);
             const reachable = [...active, ...activate];
-            if (hasCodemode && reachable.includes(CODEMODE_TOOL_NAME))
+            if ((hasCodemode && reachable.includes(CODEMODE_TOOL_NAME)) ||
+                (hasToolSearch && reachable.includes(TOOL_SEARCH_TOOL_NAME))) {
+                if (notice) {
+                    notice = undefined;
+                    warnedUnreachable = false;
+                    emitChange();
+                }
                 return;
-            if (hasToolSearch && reachable.includes(TOOL_SEARCH_TOOL_NAME))
-                return;
+            }
             if (warnedUnreachable)
                 return;
             warnedUnreachable = true;
             const reason = needsCodemode && hasCodemode && !autoEnableCodemode ? " (autoEnableCodemode is false)" : "";
-            ctx.ui.notify(`MCP tools are only reachable from the codemode or tool_search tool, but neither is active${reason}; they cannot be called.`, "warning");
+            const message = `MCP tools are only reachable from the codemode or tool_search tool, but neither is active${reason}; they cannot be called.`;
+            notice = { level: "warning", message };
+            emitChange();
+            ctx.ui.notify(message, "warning");
         };
         /**
          * Stored tokens of servers waiting for a sign-in, as they were when the sign-in was needed.
@@ -466,8 +498,10 @@ export function createMcpExtension(options = {}) {
                 providerToken: async (provider) => modelRegistry?.getApiKeyForProvider(provider),
                 log: getServerLog(runtime),
                 onTools: (connection) => {
-                    if (isCurrent())
+                    if (isCurrent()) {
                         registerTools(connection);
+                        emitChange();
+                    }
                 },
                 onChange: (connection) => {
                     if (isCurrent())
@@ -489,6 +523,7 @@ export function createMcpExtension(options = {}) {
             const { signal } = session;
             const attempt = Symbol();
             server.attempt = attempt;
+            server.runtimeError = undefined;
             const isCurrent = () => !signal.aborted && server.attempt === attempt && isEnabled(server) && servers.includes(server);
             const ready = (async () => {
                 await after;
@@ -499,7 +534,12 @@ export function createMcpExtension(options = {}) {
                     return;
                 await connection.getClient().catch(() => undefined);
             })();
-            server.ready = ready.catch(() => undefined);
+            server.ready = ready.catch((error) => {
+                if (isCurrent()) {
+                    server.runtimeError = errorMessage(error);
+                    emitChange();
+                }
+            });
             return ready;
         };
         /** Wait for the latest connection attempts, including ones queued while waiting, or an abort. */
@@ -970,7 +1010,22 @@ export function createMcpExtension(options = {}) {
             ctx.ui.notify(`Signed in to MCP server "${name}" (${server.connection?.tools.length ?? 0} tools).`, "info");
         };
         pi.on("session_start", (_event, ctx) => {
-            const loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
+            servers = [];
+            configErrors = [];
+            serverTools.clear();
+            toolOwners.clear();
+            notice = undefined;
+            phase = "starting";
+            emitStatus();
+            let loaded;
+            try {
+                loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
+            } catch (error) {
+                configErrors = [errorMessage(error)];
+                phase = "running";
+                emitStatus();
+                throw error;
+            }
             configErrors = loaded.errors;
             projectConfig = loaded.projectConfig;
             autoEnableCodemode = loaded.autoEnableCodemode ?? true;
@@ -984,6 +1039,7 @@ export function createMcpExtension(options = {}) {
             const registered = registeredServers();
             overridden = registered.overridden;
             servers = [...loaded.servers.map((entry) => ({ entry })), ...registered.servers];
+            phase = "running";
             emitChange();
             // Codemode or tool_search is activated from the config: the first prompt does not wait for
             // servers whose tools are not declared to the model, and scripts or searches wait for them.
@@ -1113,6 +1169,8 @@ export function createMcpExtension(options = {}) {
             reportProblems(ctx, connecting);
         });
         pi.on("session_shutdown", async () => {
+            phase = "closed";
+            emitStatus();
             session.abort();
             const closing = connections();
             servers = [];

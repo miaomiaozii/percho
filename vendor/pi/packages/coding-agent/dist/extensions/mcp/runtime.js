@@ -226,6 +226,11 @@ export class McpServerConnection {
     }
     /** Connect again with fresh credentials, for example after signing in. */
     async reconnect() {
+        if (!this.closed) {
+            this.state = "connecting";
+            this.error = undefined;
+            this.changed();
+        }
         await this.opening?.catch(() => undefined);
         if (this.client)
             await this.dropClient(this.client);
@@ -259,6 +264,7 @@ export class McpServerConnection {
     }
     async open() {
         this.state = "connecting";
+        this.error = undefined;
         this.changed();
         const retries = "url" in this.entry.config ? CONNECT_RETRY_DELAYS_MS : [];
         for (let attempt = 0;; attempt++) {

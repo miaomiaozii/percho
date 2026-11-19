@@ -34,6 +34,7 @@ export { VIRTUAL_MODEL_STATE_ENTRY, } from "./core/virtual-models.js";
 // Built-in extensions. The CLI loads them; SDK sessions add them to their extension factories.
 export { createCodemodeExtension } from "./extensions/codemode/index.js";
 export { createMcpExtension } from "./extensions/mcp/index.js";
+export { validateMcpServerConfig } from "./core/mcp-servers.js";
 export { createToolSearchExtension } from "./extensions/tool-search/index.js";
 // Main entry point
 export { main } from "./main.js";

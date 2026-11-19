@@ -30,7 +30,23 @@ import { type LoadedMcpConfig, type McpServerConfigPatch, type McpServerEntry } 
 import type { McpOAuthCredentialStore } from "./oauth.ts";
 import type { McpTransportFactory } from "./runtime.ts";
 export type { McpTransportFactory } from "./runtime.ts";
+export interface McpRuntimeSnapshot {
+    phase: "starting" | "running" | "closed";
+    servers: Array<{
+        name: string;
+        source: string;
+        scope: "global" | "project" | "extension";
+        override?: string;
+        state: "connecting" | "connected" | "disconnected" | "needs-auth" | "failed" | "closed" | "disabled";
+        error?: string;
+        tools: Array<{ name: string; readOnly?: boolean }>;
+    }>;
+    errors: string[];
+    notice?: { level: "info" | "warning" | "error"; message: string };
+}
 export interface McpExtensionOptions {
+    /** Receives complete snapshots without config or credentials; external error text is unchanged. */
+    onStatus?: (snapshot: McpRuntimeSnapshot) => void;
     /** Defaults to reading `mcp.json` from the agent directory and the trusted project. */
     loadConfig?: (ctx: ExtensionContext) => LoadedMcpConfig;
     /** Defaults to stdio and streamable HTTP transports built from the server config. */
