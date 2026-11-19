@@ -116,7 +116,7 @@ export async function readRuntimeManifest(path: string): Promise<RuntimeManifest
 		return parseRuntimeManifest(JSON.parse(await readFile(path, "utf8")));
 	} catch (error) {
 		throw new Error(
-			"A verified official runtime manifest is required to install. Use a packaged desktop release or prepare its release resources.",
+			"A verified runtime manifest is required to install. Use a full Percho release with bundled remote-runtime metadata to install over SSH.",
 			{ cause: error },
 		);
 	}

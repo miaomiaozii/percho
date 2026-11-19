@@ -1,6 +1,15 @@
 const { readFile } = require("node:fs/promises");
 const { join } = require("node:path");
 module.exports = async ({ packager }) => {
+	if (packager.config.extraMetadata?.perchoDesktopOnly === true) {
+		if (packager.platform.nodeName !== "win32" || packager.config.extraMetadata?.releaseChannel !== "beta")
+			throw new Error("Desktop-only packaging is restricted to Windows beta");
+		// Discard any manifest from an earlier full build without modifying the checkout.
+		packager.config.extraResources = packager.config.extraResources.filter(
+			(entry) => entry.from !== "resources/remote-runtime",
+		);
+		return;
+	}
 	const path = join(packager.info.appDir, "resources/remote-runtime/manifest.json");
 	const manifest = JSON.parse(
 		await readFile(path, "utf8").catch(() => {

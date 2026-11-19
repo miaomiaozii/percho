@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { JsonStore } from "../json-store";
+import { windowsShellModifiers } from "./windows-shell";
 
 function configStore(agentDir: string) {
 	return new JsonStore<{ enabled?: boolean; only?: boolean }>({
@@ -43,7 +44,13 @@ export function codemodeSessionOptions(settings: SettingsManager, agentDir: stri
 	settings.applyOverrides({
 		defaultTools: defaults
 			? [...defaults.filter((name) => name !== "codemode"), ...(enabled ? ["codemode"] : [])]
-			: ["+grep", "+find", "+ls", enabled ? "+codemode" : "-codemode"],
+			: [
+					...windowsShellModifiers(process.platform, settings.getShellPath()),
+					"+grep",
+					"+find",
+					"+ls",
+					enabled ? "+codemode" : "-codemode",
+				],
 	});
 	return { excludeTools: enabled ? undefined : ["codemode"] };
 }

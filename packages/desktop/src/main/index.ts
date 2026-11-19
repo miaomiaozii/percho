@@ -7,6 +7,7 @@ import { createLogger, initLogging, localSessionPaths, PiBackend } from "@percho
 import { app, BrowserWindow, Menu, nativeTheme, net, protocol, screen, shell } from "electron";
 import { releaseChannel } from "./app-identity";
 import { backgroundsDir } from "./background";
+import { applyEnvironmentProxy } from "./http-proxy";
 import { registerIpc } from "./ipc";
 import { initLanObserver, type LanObserverHandle } from "./lan";
 import { remoteConnectionManager } from "./remote-connection";
@@ -47,6 +48,7 @@ if (process.platform !== "darwin") Menu.setApplicationMenu(null);
 nativeTheme.on("updated", () => applyChromeTheme(nativeTheme.themeSource));
 
 app.whenReady().then(async () => {
+	applyEnvironmentProxy();
 	// 必须早于 prepareLocalStorage：它会创建并加载首个文档，后补 handler 对该文档不生效。
 	// 自定义背景图协议：pi-bg://background/<文件名> → userData/backgrounds/<文件名>（文件名白名单防路径穿越）
 	protocol.handle(BG_PROTOCOL, (request) => {

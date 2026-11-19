@@ -26,12 +26,13 @@ const { values: args } = parseArgs({
 		"runtime-dir": { type: "string", default: ".local/runtime-release" },
 		output: { type: "string" },
 		dir: { type: "boolean", default: false },
+		"desktop-only": { type: "boolean", default: false },
 		help: { type: "boolean", default: false },
 	},
 });
 if (args.help) {
 	console.log(
-		"npm run package:beta -- --version X.Y.Z-beta.N --runtime-dir <verified-artifacts> [--arch arm64|x64|all] [--dir] [--output <new-directory>]",
+		"npm run package:beta -- --version X.Y.Z-beta.N [--runtime-dir <verified-artifacts> | --desktop-only] [--arch arm64|x64|all] [--dir] [--output <new-directory>]",
 	);
 } else {
 	const release = await currentRelease({ version: args.version, channel: args.channel });
@@ -47,11 +48,15 @@ if (args.help) {
 		throw new Error("Include the native CPU architecture for startup verification");
 	if (!process.env.npm_execpath)
 		throw new Error("Run this command through npm run package:release or package:beta");
-	const manifest = await prepareRuntimeManifest(
-		resolve(root, args["runtime-dir"]),
-		resolve(root, "packages/desktop/resources/remote-runtime/manifest.json"),
-		release,
-	);
+	if (args["desktop-only"] && (platform !== "win32" || !release.prerelease))
+		throw new Error("--desktop-only is for standalone Windows beta builds");
+	const manifest = args["desktop-only"]
+		? null
+		: await prepareRuntimeManifest(
+				resolve(root, args["runtime-dir"]),
+				resolve(root, "packages/desktop/resources/remote-runtime/manifest.json"),
+				release,
+			);
 	const output = resolve(
 		root,
 		args.output ?? `packages/desktop/dist/releases/${release.version}/${platform}`,
@@ -83,6 +88,7 @@ if (args.help) {
 					version: release.version,
 					perchoBuildCommit: release.sourceCommit,
 					productName: channels[release.channel].name,
+					...(args["desktop-only"] ? { perchoDesktopOnly: true } : {}),
 				},
 			}),
 		);
@@ -131,7 +137,7 @@ if (args.help) {
 			...release,
 			platform,
 			architectures,
-			mode: args.dir ? "unpacked" : "release",
+			mode: args.dir ? "unpacked" : args["desktop-only"] ? "desktop-only" : "release",
 			startupArchitecture: process.arch,
 			passed: true,
 			artifacts,

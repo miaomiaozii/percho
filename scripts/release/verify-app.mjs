@@ -20,8 +20,13 @@ export async function verifyApp(app, platform, release, runtimeManifest) {
 		"Missing renderer assets",
 	);
 	assert.ok(!entries.some((name) => name.startsWith("node_modules/happy-dom/")), "Test dependency packaged");
-	const actual = JSON.parse(await readFile(join(resources, "remote-runtime/manifest.json"), "utf8"));
-	assert.deepEqual(actual, runtimeManifest, "Packaged runtime manifest");
+	if (runtimeManifest) {
+		const actual = JSON.parse(await readFile(join(resources, "remote-runtime/manifest.json"), "utf8"));
+		assert.deepEqual(actual, runtimeManifest, "Packaged runtime manifest");
+	} else {
+		assert.equal(metadata.perchoDesktopOnly, true, "Desktop-only package marker");
+		await assert.rejects(stat(join(resources, "remote-runtime/manifest.json")), { code: "ENOENT" });
+	}
 	for (const file of ["vendor/marked-cjk-friendly.min.js", "template.html"])
 		assert.ok((await stat(join(resources, "pi-package/dist/core/export-html", file))).size > 0);
 	return {
