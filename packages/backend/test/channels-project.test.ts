@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -58,6 +59,21 @@ it.each([
 ])("does not hide unrelated Git failures (%s)", async (code, stderr) => {
 	probe.error = gitFailure(String(stderr), code);
 	await expect(resolveChannelProject(fixture)).rejects.toBe(probe.error);
+});
+
+it("allows a standalone project without Git, but does not guess a worktree root", async () => {
+	const standalone = await mkdtemp(join(tmpdir(), "percho-no-git-"));
+	try {
+		const child = join(standalone, "child");
+		await mkdir(child);
+		probe.error = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT", syscall: "spawn git" });
+		expect(await resolveChannelProject(child)).toBe(await realpath(child));
+		expect(await resolveChannelProject(child, standalone)).toBe(await realpath(standalone));
+		await mkdir(join(standalone, ".git"));
+		await expect(resolveChannelProject(child)).rejects.toBe(probe.error);
+	} finally {
+		await rm(standalone, { recursive: true, force: true });
+	}
 });
 
 it("uses the Git root while removing inherited repository overrides", async () => {

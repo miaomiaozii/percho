@@ -1,9 +1,23 @@
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, relative } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+
+// Without Git, only use the non-repository fallback when no ancestor has a
+// .git directory, gitfile or link. Never infer a Git worktree's channel identity.
+async function hasGitMarker(cwd: string): Promise<boolean> {
+	for (let dir = cwd; ; dir = dirname(dir)) {
+		try {
+			await lstat(join(dir, ".git"));
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		if (dirname(dir) === dir) return false;
+	}
+}
 
 /** Resolve the worktree root without inheriting Git's repository overrides. */
 export async function resolveChannelProject(cwd: string, boundRoot?: string): Promise<string> {
@@ -21,21 +35,18 @@ export async function resolveChannelProject(cwd: string, boundRoot?: string): Pr
 		});
 		root = await realpath(result.stdout.trim());
 	} catch (error) {
-		// Only Git's explicit non-repository response permits a fallback.
-		const failure = error as { code?: unknown; stderr?: unknown };
-		if (
-			failure.code !== 128 ||
-			typeof failure.stderr !== "string" ||
-			!(
-				/^fatal: not a git repository(?: \(or any of the parent directories\): \.git)?\s*$/i.test(
-					failure.stderr,
-				) ||
+		const failure = error as { code?: unknown; stderr?: unknown; syscall?: unknown };
+		const gitMissing = failure.code === "ENOENT" && failure.syscall === "spawn git";
+		const notARepository =
+			failure.code === 128 &&
+			typeof failure.stderr === "string" &&
+			(/^fatal: not a git repository(?: \(or any of the parent directories\): \.git)?\s*$/i.test(
+				failure.stderr,
+			) ||
 				/^fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.\s*$/i.test(
 					failure.stderr,
-				)
-			)
-		)
-			throw error;
+				));
+		if (!notARepository && !(gitMissing && !(await hasGitMarker(current)))) throw error;
 	}
 	if (root) return root;
 	if (!boundRoot) return current;
