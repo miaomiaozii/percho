@@ -440,6 +440,7 @@ function createSettingsStore(environment: EnvironmentRef) {
 				case "remote":
 				case "appearance":
 				case "mcp":
+				case "piSync": // This fork's panel owns its local synchronization data.
 				case "about":
 					break;
 				default:

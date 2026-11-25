@@ -18,10 +18,11 @@ jobs:
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
+          package-manager-cache: false
       - id: plan
         run: node scripts/release-info.mjs --ci-beta
 
@@ -34,8 +35,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -59,16 +60,17 @@ jobs:
       PERCHO_BUILD_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       PERCHO_BUILD_SOURCE_COMMIT: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
         with:
           pattern: remote-runtime-*
           path: .local/release-bundle
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: .local/release-bundle
@@ -83,13 +85,22 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Native ACL checks launch PowerShell, whose cold start can exceed Vitest's 5s default.
+      # This is an integration-test budget, not a production timeout or a relaxed assertion.
       - name: Verify private storage on native filesystem and ACLs
-        run: npm run test -w packages/backend -- test/local-agent-storage.test.ts test/local-agent-storage-sdk.test.ts
+        run: >-
+          npm run test -w packages/backend -- test/local-agent-storage.test.ts test/local-agent-storage-sdk.test.ts
+          --reporter=verbose --maxWorkers=2
+          --testTimeout=${{ runner.os == 'Windows' && 120000 || 5000 }}
+          --hookTimeout=${{ runner.os == 'Windows' && 30000 || 10000 }}
       - name: Test private storage startup decisions
-        run: npm run test -w packages/desktop -- src/main/storage-startup-controller.test.ts
+        run: >-
+          npm run test -w packages/desktop -- src/main/storage-startup-controller.test.ts
+          --maxWorkers=2 --testTimeout=${{ runner.os == 'Windows' && 120000 || 5000 }}
+          --hookTimeout=${{ runner.os == 'Windows' && 30000 || 10000 }}

@@ -15,7 +15,7 @@ export declare const SETTINGS_DEFAULTS: {
     };
     readonly retry: {
         readonly enabled: true;
-        readonly maxRetries: 3;
+        readonly maxRetries: 5;
         readonly baseDelayMs: 2000;
         readonly maxAgentDelayMs: 60000;
         readonly provider: {

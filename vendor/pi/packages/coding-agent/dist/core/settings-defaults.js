@@ -16,7 +16,7 @@ export const SETTINGS_DEFAULTS = {
     },
     retry: {
         enabled: true,
-        maxRetries: 3,
+        maxRetries: 5,
         baseDelayMs: 2000,
         maxAgentDelayMs: DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
         provider: {

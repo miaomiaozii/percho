@@ -119,6 +119,24 @@ afterEach(async () => {
 	vi.unstubAllGlobals();
 });
 
+it("keeps a cached empty search visible after disconnecting", async () => {
+	const searchQuery = { ...query, search: "missing" };
+	api.querySessionCatalog.mockResolvedValueOnce({ sessions: [], revision: "1", complete: true, errors: 0 });
+	await useSessionCatalogStore.getState().loadPage(environment, searchQuery);
+	await act(async () =>
+		root.render(
+			<SidebarGroup
+				group={group}
+				activeSessionId={null}
+				batching={batching}
+				paging={{ search: "missing", verified: [], pinnedSessions: [], known: [] }}
+			/>,
+		),
+	);
+	expectOnlyOffline();
+	expect(button("sidebar.catalogConnect")).toBeDefined();
+});
+
 it("offline initially does not query or show partial, retry or loading", async () => {
 	await render();
 	expect(api.querySessionCatalog).not.toHaveBeenCalled();
@@ -140,6 +158,7 @@ it("retains cached rows and cursor, disables more and opens the connection panel
 	expect(connect).toBeDefined();
 	await act(() => connect?.click());
 	expect(useRemoteConnectionStore.getState().open).toBe(true);
+	expect(useRemoteConnectionStore.getState().targetEnvironment).toEqual(environment);
 	expect(api.remoteConnect).not.toHaveBeenCalled();
 	expect(api.querySessionCatalog).not.toHaveBeenCalled();
 });

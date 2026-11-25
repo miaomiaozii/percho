@@ -29,7 +29,7 @@ export function runtimeBuildLock(lock, version) {
 	//     npm ci materializes real copies of them.
 	//   - published Pi from npm: pin the version the lock resolved, and patch-package
 	//     applies the Pi patches during the stage install.
-	const dependencies = {};
+	const dependencies = { "proper-lockfile": "4.1.2" };
 	const devDependencies = { esbuild: "0.25.12" };
 	const vendoredPi = {};
 	for (const [name, vendorDir] of Object.entries(PI_VENDOR_DIRS)) {

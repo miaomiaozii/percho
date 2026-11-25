@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -41,7 +41,7 @@ const code = buildSync({
 	write: false,
 	external: ["electron"],
 }).outputFiles[0]?.text;
-type Listener = (event: unknown, payload?: unknown, source?: unknown) => void;
+type Listener = (event: unknown, payload?: unknown, source?: unknown, metadata?: unknown) => void;
 function bootPreload() {
 	if (!code) throw new Error("preload bundle missing");
 	let exposed: PiApi | undefined;
@@ -174,8 +174,13 @@ describe("single-source subscription contract and real bundled preload", () => {
 		api.forEnvironment(LOCAL_ENVIRONMENT).onEvent(local);
 		const off = bound.onEvent(foreign);
 		const event = { sessionId: "same-id", event: { type: "agent_end", messages: [] } };
+		const environment = { kind: "ssh", connectionId: "company", environmentId: "data" };
+		const boundary = { epoch: "run", generation: 1 };
+		for (const listener of listeners.get(SUBSCRIPTION_TABLE.onRemoteConnectionStatus.channel) ?? []) {
+			listener({}, { state: "connected", revision: 1, ...boundary, connectionId: "company", environment });
+		}
 		for (const listener of listeners.get(IpcChannels.Event) ?? []) {
-			listener({}, event, { kind: "ssh", connectionId: "company", environmentId: "data" });
+			listener({}, event, environment, boundary);
 		}
 		expect(local).not.toHaveBeenCalled();
 		expect(foreign).toHaveBeenCalledExactlyOnceWith(event);
@@ -186,7 +191,7 @@ describe("single-source subscription contract and real bundled preload", () => {
 function compileFixture(body: string) {
 	const root = mkdtempSync(join(tmpdir(), "percho-subscription-types-"));
 	try {
-		const file = join(root, "fixture.ts");
+		const file = join(realpathSync(root), "fixture.ts");
 		// Resolve the real public barrel explicitly: temp fixtures need not have workspace node_modules ancestors.
 		const source = `import { IpcChannels, type PiApi } from ${JSON.stringify(SHARED)};\nimport { sendToRenderer, forward } from ${JSON.stringify(SEND)};\ndeclare const api: PiApi;\n${body}`;
 		writeFileSync(file, source);
@@ -202,7 +207,10 @@ function compileFixture(body: string) {
 			allowImportingTsExtensions: true,
 		});
 		return ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
-			file: diagnostic.file?.fileName === file ? "fixture" : diagnostic.file?.fileName,
+			file:
+				diagnostic.file && resolve(diagnostic.file.fileName) === resolve(file)
+					? "fixture"
+					: diagnostic.file?.fileName,
 			line:
 				diagnostic.file && diagnostic.start !== undefined
 					? diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start).line + 1

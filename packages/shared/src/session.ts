@@ -212,6 +212,8 @@ export interface SessionAssistantMessage extends SessionBaseMessage {
 	generation?: ModelGenerationStats | null;
 	/** 停因原样透传（仅 "error" 被消费，历史回放错误卡数据源；旧会话文件无此字段 → undefined → 不产卡） */
 	stopReason?: string;
+	/** 当前分支通过 SDK context_edit(null) 省略了该次错误；是否恢复须结合后续尝试或实时活动判断。 */
+	errorOmitted?: boolean;
 	/** LLM 错误详情（stopReason==="error" 时存在；历史回放错误卡 detail 数据源） */
 	errorMessage?: string;
 }
@@ -343,6 +345,8 @@ export interface QueuedInput {
 
 export interface CreateSessionOptions {
 	cwd: string;
+	/** 宿主指定的频道项目根，不影响执行目录。 */
+	channelProjectRoot?: string;
 	provider?: string;
 	modelId?: string;
 	thinkingLevel?: string;
